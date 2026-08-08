@@ -6,7 +6,7 @@ import tkinter as tk
 import ctypes
 from datetime import datetime, timedelta
 import pystray
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageTk, ImageChops
 import math
 import random
 
@@ -330,47 +330,56 @@ class VerticalHistoryChart(tk.Canvas):
         # Clear previous PIL image
         self.delete("chart_img")
         
-        mask_dim = Image.new("L", (self.width, self.height), 0)
-        mask_bright = Image.new("L", (self.width, self.height), 0)
-        d_mask_dim = ImageDraw.Draw(mask_dim)
-        d_mask_bright = ImageDraw.Draw(mask_bright)
+        BLOCK_STEP = 3
+        mid_x = int(self.width / 2)
+        
+        # 1. Draw continuous polygon for the entire history
+        mask_poly = Image.new("L", (self.width, self.height), 0)
+        d_poly = ImageDraw.Draw(mask_poly)
+        
+        pts_g = [(mid_x - 2, self.y_top)]
+        pts_e = [(mid_x + 3, self.y_top)]
+        
+        for idx, (g, e) in enumerate(buckets):
+            # cy is the exact center Y of this 3px block for the polygon point
+            cy = int(self.y_top + idx * 3 + 1.5)
+            
+            # GEMINI
+            offset_g = min(10.0, g) * BLOCK_STEP
+            xg = mid_x - 2 - offset_g
+            
+            # EXTERNAL
+            offset_e = min(10.0, e) * BLOCK_STEP
+            xe = mid_x + 3 + offset_e
+            
+            pts_g.append((xg, cy))
+            pts_e.append((xe, cy))
+            
+        pts_g.append((mid_x - 2, int(self.y_top + len(buckets) * 3)))
+        pts_e.append((mid_x + 3, int(self.y_top + len(buckets) * 3)))
+        
+        d_poly.polygon(pts_g, fill=255)
+        d_poly.polygon(pts_e, fill=255)
+        
+        # 2. Identify Overflow Spikes
+        mask_over = Image.new("L", (self.width, self.height), 0)
+        d_over = ImageDraw.Draw(mask_over)
         
         for idx, (g, e) in enumerate(buckets):
             cy = int(self.y_top + idx * 3)
             
-            # ── GEMINI ──
-            g_capped = min(10.0, g)
-            g_full = int(g_capped // 1.0)
-            g_half = 1 if (g_capped % 1.0) >= 0.5 else 0
-            g_total = g_full + g_half
-            
-            if g_total > 0:
-                b = g_total - 1
-                x_right_block = mid_x - 2 - (b * BLOCK_STEP)
-                x_left_block = x_right_block - (1 if g_half else 2)
+            if g >= 10.0:
+                d_over.rectangle([0, cy, mid_x - 1, cy + 2], fill=255)
+            if e >= 10.0:
+                d_over.rectangle([mid_x + 1, cy, self.width, cy + 2], fill=255)
                 
-                if g < 10.0:
-                    d_mask_dim.rectangle([x_left_block, cy, mid_x - 2, cy + 2], fill=255)
-                else:
-                    d_mask_bright.rectangle([x_left_block, cy, mid_x - 2, cy + 2], fill=255)
+        # 3. Intersect Masks
+        # mask_bright gets only the polygon regions that intersect with overflow Y-coords
+        mask_bright = ImageChops.multiply(mask_poly, mask_over)
+        # mask_dim gets the rest of the polygon
+        mask_dim = ImageChops.subtract(mask_poly, mask_bright)
                     
-            # ── EXTERNAL ──
-            e_capped = min(10.0, e)
-            e_full = int(e_capped // 1.0)
-            e_half = 1 if (e_capped % 1.0) >= 0.5 else 0
-            e_total = e_full + e_half
-            
-            if e_total > 0:
-                b = e_total - 1
-                x_left_block = mid_x + 3 + (b * BLOCK_STEP)
-                x_right_block = x_left_block + (1 if e_half else 2)
-                
-                if e < 10.0:
-                    d_mask_dim.rectangle([mid_x + 3, cy, x_right_block, cy + 2], fill=255)
-                else:
-                    d_mask_bright.rectangle([mid_x + 3, cy, x_right_block, cy + 2], fill=255)
-                    
-        # Composite the masks
+        # 4. Composite the layers
         bg_img = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
         layer_dim = Image.composite(self.grad_dim, bg_img, mask_dim)
         final_img = Image.composite(self.grad_bright, layer_dim, mask_bright)
