@@ -187,10 +187,78 @@ class VerticalHistoryChart(tk.Canvas):
         self.buckets = []
         self.y_top = 10
         self.y_bottom = height - 15
+        self._init_gradients()
         
         self.bind("<Motion>", self.on_mouse_move)
         self.bind("<Leave>", self.on_mouse_leave)
         
+
+    def _init_gradients(self):
+        def hex2rgb(h):
+            h = h.lstrip('#')
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+            
+        def interpolate(c1, c2, factor):
+            return tuple(int(c1[i] + (c2[i] - c1[i]) * factor) for i in range(3))
+            
+        def deepen(rgb, factor):
+            return tuple(int(c * factor) for c in rgb)
+            
+        def highlight(rgb, factor, add):
+            return tuple(min(255, int(c * factor + add)) for c in rgb)
+
+        mid_x = int(self.width / 2)
+        BLOCK_STEP = 3
+        
+        self.grad_dim = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
+        self.grad_bright = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
+        d_dim = ImageDraw.Draw(self.grad_dim)
+        d_bright = ImageDraw.Draw(self.grad_bright)
+        
+        c_green = hex2rgb("#10B981")
+        c_yellow = hex2rgb("#EAB308")
+        c_red = hex2rgb("#EF4444")
+        
+        for b in range(11):
+            x_right = mid_x - 2 - (b * BLOCK_STEP)
+            x_left = x_right - BLOCK_STEP
+            
+            factor = b / 10.0
+            if factor <= 0.5:
+                f = factor * 2
+                base = interpolate(c_green, c_yellow, f)
+            else:
+                f = (factor - 0.5) * 2
+                base = interpolate(c_yellow, c_red, f)
+                
+            color_dim = deepen(base, 0.5) + (255,)
+            color_bright = highlight(base, 1.2, 20) + (255,)
+            
+            d_dim.rectangle([x_left, 0, x_right, self.height], fill=color_dim)
+            d_bright.rectangle([x_left, 0, x_right, self.height], fill=color_bright)
+
+        c_orange = hex2rgb("#F97316")
+        c_purple = hex2rgb("#7C3AED")
+        c_blue = hex2rgb("#2563EB")
+        
+        for b in range(11):
+            x_left = mid_x + 3 + (b * BLOCK_STEP)
+            x_right = x_left + BLOCK_STEP
+            
+            factor = b / 10.0
+            if factor <= 0.5:
+                f = factor * 2
+                base = interpolate(c_orange, c_purple, f)
+            else:
+                f = (factor - 0.5) * 2
+                base = interpolate(c_purple, c_blue, f)
+                
+            color_dim = deepen(base, 0.5) + (255,)
+            color_bright = highlight(base, 1.2, 20) + (255,)
+            
+            d_dim.rectangle([x_left, 0, x_right, self.height], fill=color_dim)
+            d_bright.rectangle([x_left, 0, x_right, self.height], fill=color_bright)
+
     def render(self, history):
         self.delete("all")
         if not history or len(history) < 2:
@@ -262,64 +330,53 @@ class VerticalHistoryChart(tk.Canvas):
         # Clear previous PIL image
         self.delete("chart_img")
         
-        # Create a pixel-perfect bitmap buffer using PIL to completely bypass Tkinter/DWM floating-point subpixel rounding gaps
-        img = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
+        mask_dim = Image.new("L", (self.width, self.height), 0)
+        mask_bright = Image.new("L", (self.width, self.height), 0)
+        d_mask_dim = ImageDraw.Draw(mask_dim)
+        d_mask_bright = ImageDraw.Draw(mask_bright)
         
         for idx, (g, e) in enumerate(buckets):
             cy = int(self.y_top + idx * 3)
             
-            # ── GEMINI Blocks ──
+            # ── GEMINI ──
             g_capped = min(10.0, g)
             g_full = int(g_capped // 1.0)
             g_half = 1 if (g_capped % 1.0) >= 0.5 else 0
             g_total = g_full + g_half
-            is_g_overflow = (g >= 10.0)
-            g_intensity = min(g / 10.0, 1.0)
             
-            for b in range(g_total):
-                x_right = mid_x - 2 - (b * BLOCK_STEP)
-                is_half = (b == g_full) # Only the last block is half (if any)
-                x_left = x_right - (1 if is_half else 2)
+            if g_total > 0:
+                b = g_total - 1
+                x_right_block = mid_x - 2 - (b * BLOCK_STEP)
+                x_left_block = x_right_block - (1 if g_half else 2)
                 
-                pos_factor = b / max(g_total - 1, 1)
-                factor = pos_factor * g_intensity
-                base_color = interpolate_color_3(COLOR_GEM_SAFE, "#EAB308", "#EF4444", factor)
-                
-                if not is_g_overflow:
-                    color = deepen_rgb(base_color, 0.5)
+                if g < 10.0:
+                    d_mask_dim.rectangle([x_left_block, cy, mid_x - 2, cy + 2], fill=255)
                 else:
-                    color = highlight_rgb(base_color, 1.2, 20)
+                    d_mask_bright.rectangle([x_left_block, cy, mid_x - 2, cy + 2], fill=255)
                     
-                # PIL rectangle [x0, y0, x1, y1] is fully inclusive. cy to cy+2 strictly covers 3 pixels.
-                draw.rectangle([x_left, cy, x_right - 1, cy + 2], fill=color)
-                
-            # ── EXTERNAL Blocks ──
+            # ── EXTERNAL ──
             e_capped = min(10.0, e)
             e_full = int(e_capped // 1.0)
             e_half = 1 if (e_capped % 1.0) >= 0.5 else 0
             e_total = e_full + e_half
-            is_e_overflow = (e >= 10.0)
-            e_intensity = min(e / 10.0, 1.0)
             
-            for b in range(e_total):
-                x_left = mid_x + 3 + (b * BLOCK_STEP)
-                is_half = (b == e_full)
-                x_right = x_left + (1 if is_half else 2)
+            if e_total > 0:
+                b = e_total - 1
+                x_left_block = mid_x + 3 + (b * BLOCK_STEP)
+                x_right_block = x_left_block + (1 if e_half else 2)
                 
-                pos_factor = b / max(e_total - 1, 1)
-                factor = pos_factor * e_intensity
-                base_color = interpolate_color_3(COLOR_EXT_SAFE, "#7C3AED", "#2563EB", factor)
-                
-                if not is_e_overflow:
-                    color = deepen_rgb(base_color, 0.5)
+                if e < 10.0:
+                    d_mask_dim.rectangle([mid_x + 3, cy, x_right_block, cy + 2], fill=255)
                 else:
-                    color = highlight_rgb(base_color, 1.2, 20)
+                    d_mask_bright.rectangle([mid_x + 3, cy, x_right_block, cy + 2], fill=255)
                     
-                draw.rectangle([x_left, cy, x_right - 1, cy + 2], fill=color)
+        # Composite the masks
+        bg_img = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
+        layer_dim = Image.composite(self.grad_dim, bg_img, mask_dim)
+        final_img = Image.composite(self.grad_bright, layer_dim, mask_bright)
             
         # Stamp the perfectly rendered pixel buffer onto the Tkinter canvas
-        self.chart_tk_img = ImageTk.PhotoImage(img)
+        self.chart_tk_img = ImageTk.PhotoImage(final_img)
         self.create_image(0, 0, anchor="nw", image=self.chart_tk_img, tags="chart_img")
         self.tag_lower("chart_img")
         
