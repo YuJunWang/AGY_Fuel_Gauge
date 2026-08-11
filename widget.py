@@ -159,8 +159,11 @@ class VerticalFuelGauge(tk.Canvas):
             
         self.itemconfig(self.pct_text, text=f"{int(val)}%", fill=core)
             
-        time_str = reset_time
-        if reset_time and "Z" in reset_time:
+        if val >= 99.9:
+            time_str = "Full"
+        else:
+            time_str = reset_time
+        if val < 99.9 and reset_time and "Z" in reset_time:
             try:
                 dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
                 now_utc = datetime.utcnow()
@@ -790,6 +793,7 @@ class UsageWidget:
 if __name__ == "__main__":
     app = UsageWidget()
     app.run()
+
 
 
 
