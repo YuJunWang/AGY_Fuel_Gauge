@@ -349,11 +349,11 @@ class VerticalHistoryChart(tk.Canvas):
             
             # GEMINI
             offset_g = min(10.0, g) * BLOCK_STEP
-            xg = mid_x - 2 - offset_g
+            xg = round(mid_x - 2 - offset_g)
             
             # EXTERNAL
             offset_e = min(10.0, e) * BLOCK_STEP
-            xe = mid_x + 3 + offset_e
+            xe = round(mid_x + 3 + offset_e)
             
             pts_g.append((xg, cy))
             pts_e.append((xe, cy))
