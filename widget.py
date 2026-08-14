@@ -167,27 +167,13 @@ class VerticalFuelGauge(tk.Canvas):
         pct_label = "--" if is_depleted else f"{int(val)}"
         self.itemconfig(self.pct_text, text=f"{pct_label}%", fill=core)
         
-        # Timer logic
+        # Timer logic — unified format for all states:
+        # Full (>=99.9%) → "Full"
+        # Any other val  → "Xh Xm" countdown to reset (or "Reset..." if past)
         if val >= 99.9:
             time_str = "Full"
-        elif is_depleted:
-            # 0%: parse resetTime to show exact cooldown countdown
-            time_str = "--"
-            if reset_time and "Z" in reset_time:
-                try:
-                    dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
-                    now_utc = datetime.utcnow()
-                    if dt > now_utc:
-                        delta = dt - now_utc
-                        hours, remainder = divmod(delta.seconds, 3600)
-                        minutes = remainder // 60
-                        time_str = f"+{hours}h {minutes}m" if hours > 0 else f"+{minutes}m"
-                    else:
-                        time_str = "Refill..."
-                except Exception:
-                    time_str = "--"
         else:
-            time_str = reset_time
+            time_str = "--"
             if reset_time and "Z" in reset_time:
                 try:
                     dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
