@@ -127,10 +127,17 @@ class VerticalFuelGauge(tk.Canvas):
 
     def set_value(self, pct_remaining, reset_time):
         val = max(0.0, min(100.0, pct_remaining))
-        fill_height = self.track_height * (val / 100.0)
-        curr_y = self.y_bottom - fill_height
+        is_depleted = (val == 0.0)
         
-        if self.is_gemini:
+        fill_height = self.track_height * (val / 100.0)
+        # When val=0, create_line with identical endpoints renders nothing.
+        # Clamp curr_y to leave a minimal 1px stub so the track isn't blank.
+        curr_y = max(self.y_bottom - 1, self.y_bottom - fill_height) if is_depleted else self.y_bottom - fill_height
+        
+        if is_depleted:
+            # Distinct "exhausted" color: dim grey to signal unavailability
+            core, base, tip = "#4B5563", "#1F2937", "#9CA3AF"
+        elif self.is_gemini:
             if val <= 20:
                 core, base, tip = COLOR_GEM_DANGER, "#7F1D1D", "#FECACA"
             elif val <= 50:
@@ -156,30 +163,48 @@ class VerticalFuelGauge(tk.Canvas):
             self.itemconfig(self.tip_dot, fill=tip, state="normal")
         else:
             self.itemconfig(self.tip_dot, state="hidden")
-            
-        self.itemconfig(self.pct_text, text=f"{int(val)}%", fill=core)
-            
+        
+        pct_label = "--" if is_depleted else f"{int(val)}"
+        self.itemconfig(self.pct_text, text=f"{pct_label}%", fill=core)
+        
+        # Timer logic
         if val >= 99.9:
             time_str = "Full"
+        elif is_depleted:
+            # 0%: parse resetTime to show exact cooldown countdown
+            time_str = "--"
+            if reset_time and "Z" in reset_time:
+                try:
+                    dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
+                    now_utc = datetime.utcnow()
+                    if dt > now_utc:
+                        delta = dt - now_utc
+                        hours, remainder = divmod(delta.seconds, 3600)
+                        minutes = remainder // 60
+                        time_str = f"+{hours}h {minutes}m" if hours > 0 else f"+{minutes}m"
+                    else:
+                        time_str = "Refill..."
+                except Exception:
+                    time_str = "--"
         else:
             time_str = reset_time
-        if val < 99.9 and reset_time and "Z" in reset_time:
-            try:
-                dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
-                now_utc = datetime.utcnow()
-                if dt > now_utc:
-                    delta = dt - now_utc
-                    hours, remainder = divmod(delta.seconds, 3600)
-                    minutes = remainder // 60
-                    days = delta.days
-                    if days > 0:
-                        time_str = f"{days}d {hours}h"
+            if reset_time and "Z" in reset_time:
+                try:
+                    dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
+                    now_utc = datetime.utcnow()
+                    if dt > now_utc:
+                        delta = dt - now_utc
+                        hours, remainder = divmod(delta.seconds, 3600)
+                        minutes = remainder // 60
+                        days = delta.days
+                        if days > 0:
+                            time_str = f"{days}d {hours}h"
+                        else:
+                            time_str = f"{hours}h {minutes}m"
                     else:
-                        time_str = f"{hours}h {minutes}m"
-                else:
-                    time_str = "Reset..."
-            except Exception:
-                pass
+                        time_str = "Reset..."
+                except Exception:
+                    pass
         self.itemconfig(self.time_text, text=time_str)
 
 class VerticalHistoryChart(tk.Canvas):
