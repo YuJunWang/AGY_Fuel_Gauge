@@ -49,7 +49,7 @@ COLOR_EXT_DANGER = "#EF4444" # Red 500
 COLOR_EXT_CHART  = "#FB923C" # Orange 400 (matches Safe)
 COLOR_EXT_CHART_OVERFLOW = "#EF4444" # Red 500
 
-DIGITAL_FONT        = "Fira Code" # Neo-Brutalism monospace
+DIGITAL_FONT        = "JetBrains Mono" # Modern minimalist monospace
 
 # ── Utility: Color Gradient ───────────────────────────────────────────────
 def hex_to_rgb(hex_str):
