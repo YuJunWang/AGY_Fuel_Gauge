@@ -24,6 +24,17 @@ try:
 except Exception:
     pass
 
+# ── Load Bundled Monospace Font ───────────────────────────────────────────
+# Dynamically register bundled JetBrains Mono so it renders cleanly even if not installed in Windows.
+try:
+    font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+    for font_file in ["JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"]:
+        fp = os.path.join(font_dir, font_file)
+        if os.path.exists(fp):
+            ctypes.windll.gdi32.AddFontResourceExW(fp, 0x10, 0)  # FR_PRIVATE
+except Exception:
+    pass
+
 import data_fetcher
 import history_logger
 
@@ -116,11 +127,11 @@ class VerticalFuelGauge(tk.Canvas):
         self.line_core = self.create_line(self.cx, self.y_bottom, self.cx, self.y_bottom, fill="#000", width=self.bar_width - 4, capstyle=tk.ROUND)
         self.tip_dot = self.create_oval(0, 0, 0, 0, fill="#000", outline="", state="hidden")
         
-        # Percentage (Fira Code)
+        # Percentage (JetBrains Mono)
         self.pct_text = self.create_text(self.cx, self.y_bottom + 18, text="--%", fill=TEXT_FG, font=(DIGITAL_FONT, 10, "bold"), justify="center")
         
         title_color = COLOR_GEM_SAFE if is_gemini else COLOR_EXT_SAFE
-        self.title_text = self.create_text(self.cx, self.y_top - 16, text=title, fill=title_color, font=("Segoe UI", 8, "bold"), justify="center")
+        self.title_text = self.create_text(self.cx, self.y_top - 16, text=title, fill=title_color, font=(DIGITAL_FONT, 8, "bold"), justify="center")
         
         text_x = self.cx + 15 if text_side == "right" else self.cx - 15
         self.time_text = self.create_text(text_x, self.height / 2, text="--h", fill=TEXT_MUTED, font=("Segoe UI", 9), justify="center", angle=270)
