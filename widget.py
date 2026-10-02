@@ -133,35 +133,45 @@ class VerticalFuelGauge(tk.Canvas):
         title_color = COLOR_GEM_SAFE if is_gemini else COLOR_EXT_SAFE
         self.title_text = self.create_text(self.cx, self.y_top - 16, text=title, fill=title_color, font=(DIGITAL_FONT, 8, "bold"), justify="center")
         
-        text_x = self.cx + 15 if text_side == "right" else self.cx - 15
-        self.time_text = self.create_text(text_x, self.height / 2, text="--h", fill=TEXT_MUTED, font=("Segoe UI", 9), justify="center", angle=270)
+        text_x = self.cx + 14 if text_side == "right" else self.cx - 14
+        self.time_text = self.create_text(text_x, self.height / 2, text="--h", fill=TEXT_MUTED, font=(DIGITAL_FONT, 8), justify="center", angle=270)
 
     def set_value(self, pct_remaining, reset_time):
         val = max(0.0, min(100.0, pct_remaining))
         is_depleted = (val == 0.0)
         
         fill_height = self.track_height * (val / 100.0)
-        # When val=0, create_line with identical endpoints renders nothing.
-        # Clamp curr_y to leave a minimal 1px stub so the track isn't blank.
-        curr_y = max(self.y_bottom - 1, self.y_bottom - fill_height) if is_depleted else self.y_bottom - fill_height
+        # When val=0, leave a clean 2px stub so the track bottom is visible
+        curr_y = (self.y_bottom - 2) if is_depleted else (self.y_bottom - fill_height)
         
-        if is_depleted:
-            # Distinct "exhausted" color: dim grey to signal unavailability
-            core, base, tip = "#4B5563", "#1F2937", "#9CA3AF"
-        elif self.is_gemini:
-            if val <= 20:
-                core, base, tip = COLOR_GEM_DANGER, "#7F1D1D", "#FECACA"
-            elif val <= 50:
-                core, base, tip = COLOR_GEM_WARN, "#713F12", "#FEF08A"
-            else:
-                core, base, tip = COLOR_GEM_SAFE, "#14532D", "#86EFAC"
+        if self.is_gemini:
+            danger_color = COLOR_GEM_DANGER
+            warn_color   = COLOR_GEM_WARN
+            safe_color   = COLOR_GEM_SAFE
+            danger_base  = "#7F1D1D"
+            warn_base    = "#713F12"
+            safe_base    = "#14532D"
+            danger_tip   = "#FECACA"
         else:
-            if val <= 20:
-                core, base, tip = COLOR_EXT_DANGER, "#7F1D1D", "#FECACA"
-            elif val <= 50:
-                core, base, tip = COLOR_EXT_WARN, "#9A3412", "#FDBA74"
-            else:
-                core, base, tip = COLOR_EXT_SAFE, "#7C2D12", "#FED7AA"
+            danger_color = COLOR_EXT_DANGER
+            warn_color   = COLOR_EXT_WARN
+            safe_color   = COLOR_EXT_SAFE
+            danger_base  = "#7F1D1D"
+            warn_base    = "#9A3412"
+            safe_base    = "#7C2D12"
+            danger_tip   = "#FECACA"
+
+        if is_depleted or val <= 20:
+            core, base, tip = danger_color, danger_base, danger_tip
+            title_color = danger_color
+        elif val <= 50:
+            core, base, tip = warn_color, warn_base, "#FEF08A" if self.is_gemini else "#FDBA74"
+            title_color = safe_color
+        else:
+            core, base, tip = safe_color, safe_base, "#86EFAC" if self.is_gemini else "#FED7AA"
+            title_color = safe_color
+
+        self.itemconfig(self.title_text, fill=title_color)
         
         self.coords(self.line_base, self.cx, self.y_bottom, self.cx, curr_y)
         self.itemconfig(self.line_base, fill=base)
@@ -175,8 +185,8 @@ class VerticalFuelGauge(tk.Canvas):
         else:
             self.itemconfig(self.tip_dot, state="hidden")
         
-        pct_label = "--" if is_depleted else f"{int(val)}"
-        self.itemconfig(self.pct_text, text=f"{pct_label}%", fill=core)
+        # Display exact percentage (e.g. 0%, never misleading '--%')
+        self.itemconfig(self.pct_text, text=f"{int(val)}%", fill=core)
         
         # Timer logic — unified format for all states:
         # Full (>=99.9%) → "Full"
@@ -749,12 +759,11 @@ class UsageWidget:
         g_wk_pct = g.get("weekly_percent", 0)
         e_wk_pct = e.get("weekly_percent", 0)
         
-        # If weekly usage is 0, 5H usage should also be 0 and have no relevant reset time
-        g_5h_pct = 0 if g_wk_pct == 0 else g.get("5hr_percent", 0)
-        g_5h_time = "-h --m" if g_wk_pct == 0 else g.get("reset_time_5h", "--")
+        g_5h_pct = g.get("5hr_percent", 0)
+        g_5h_time = g.get("reset_time_5h", "--")
         
-        e_5h_pct = 0 if e_wk_pct == 0 else e.get("5hr_percent", 0)
-        e_5h_time = "-h --m" if e_wk_pct == 0 else e.get("reset_time_5h", "--")
+        e_5h_pct = e.get("5hr_percent", 0)
+        e_5h_time = e.get("reset_time_5h", "--")
         
         self.gemini_5h_gauge.set_value(g_5h_pct, g_5h_time)
         self.ext_5h_gauge.set_value(e_5h_pct, e_5h_time)
