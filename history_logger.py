@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "usage_history.json")
 
-def log_usage(gemini_5h_pct, external_5h_pct):
+def log_usage(gemini_5h_pct, external_5h_pct, argon_wk_pct=None):
     """
     Appends the current usage to the history file.
     Enforces a 2.5-minute cooldown to prevent manual refreshes from
@@ -27,6 +27,8 @@ def log_usage(gemini_5h_pct, external_5h_pct):
         "gemini_5h": gemini_5h_pct,
         "external_5h": external_5h_pct
     }
+    if argon_wk_pct is not None:
+        record["argon_wk"] = argon_wk_pct
     
     history.append(record)
     

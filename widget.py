@@ -11,9 +11,12 @@ import math
 import random
 
 # ── Single Instance Lock ───────────────────────────────────────────────────
-mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\AGY_Fuel_Gauge_Mutex")
-if ctypes.windll.kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
-    sys.exit(0)
+mutex = None
+def _acquire_single_instance_lock():
+    global mutex
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\AGY_Fuel_Gauge_Mutex")
+    if ctypes.windll.kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+        sys.exit(0)
 
 # ── DPI Awareness ──────────────────────────────────────────────────────────
 # Enable DPI awareness to bypass Windows Desktop Window Manager (DWM) scaling.
@@ -59,6 +62,11 @@ COLOR_EXT_WARN   = "#EA580C" # Orange 600
 COLOR_EXT_DANGER = "#EF4444" # Red 500
 COLOR_EXT_CHART  = "#FB923C" # Orange 400 (matches Safe)
 COLOR_EXT_CHART_OVERFLOW = "#EF4444" # Red 500
+
+# Argon Dynamic Colors
+COLOR_ARG_SAFE   = "#06B6D4" # Cyan 500
+COLOR_ARG_WARN   = "#FACC15" # Yellow 400
+COLOR_ARG_DANGER = "#EF4444" # Red 500
 
 DIGITAL_FONT        = "JetBrains Mono" # Modern minimalist monospace
 
@@ -213,6 +221,107 @@ class VerticalFuelGauge(tk.Canvas):
                 except Exception:
                     pass
         self.itemconfig(self.time_text, text=time_str)
+
+
+class HorizontalFuelGauge(tk.Canvas):
+    def __init__(self, parent, width=96, height=36, title="ARG", **kwargs):
+        super().__init__(parent, width=width, height=height, bg=BG_COLOR, highlightthickness=0, **kwargs)
+        self.width = width
+        self.height = height
+
+        self.bar_width = 10
+        self.x_left = 8
+        self.x_right = self.width - 8
+        self.track_width = self.x_right - self.x_left
+        self.cy = 25
+
+        # Top telemetry labels: Title (Left), Reset Timer (Center), Percentage (Right)
+        self.title_text = self.create_text(
+            self.x_left - 2, 9, text=title, fill=COLOR_ARG_SAFE,
+            font=(DIGITAL_FONT, 8, "bold"), anchor="w"
+        )
+        self.time_text = self.create_text(
+            self.width / 2, 9, text="--", fill=TEXT_MUTED,
+            font=(DIGITAL_FONT, 7), anchor="center"
+        )
+        self.pct_text = self.create_text(
+            self.x_right + 2, 9, text="--%", fill=TEXT_FG,
+            font=(DIGITAL_FONT, 8, "bold"), anchor="e"
+        )
+
+        # Horizontal Track
+        self.create_line(
+            self.x_left, self.cy, self.x_right, self.cy,
+            fill=TRACK_BG, width=self.bar_width, capstyle=tk.ROUND
+        )
+
+        # Glow (Base + Core) & Tip Dot
+        self.line_base = self.create_line(
+            self.x_left, self.cy, self.x_left, self.cy,
+            fill="#000", width=self.bar_width, capstyle=tk.ROUND
+        )
+        self.line_core = self.create_line(
+            self.x_left, self.cy, self.x_left, self.cy,
+            fill="#000", width=self.bar_width - 4, capstyle=tk.ROUND
+        )
+        self.tip_dot = self.create_oval(0, 0, 0, 0, fill="#000", outline="", state="hidden")
+
+    def set_value(self, pct_remaining, reset_time):
+        val = max(0.0, min(100.0, pct_remaining))
+        is_depleted = (val == 0.0)
+
+        fill_width = self.track_width * (val / 100.0)
+        curr_x = (self.x_left + 2) if is_depleted else (self.x_left + fill_width)
+
+        if is_depleted or val <= 20:
+            core, base, tip = COLOR_ARG_DANGER, "#7F1D1D", "#FECACA"
+            title_color = COLOR_ARG_DANGER
+        elif val <= 50:
+            core, base, tip = COLOR_ARG_WARN, "#713F12", "#FEF08A"
+            title_color = COLOR_ARG_SAFE
+        else:
+            core, base, tip = COLOR_ARG_SAFE, "#164E63", "#A5F3FC"
+            title_color = COLOR_ARG_SAFE
+
+        self.itemconfig(self.title_text, fill=title_color)
+
+        self.coords(self.line_base, self.x_left, self.cy, curr_x, self.cy)
+        self.itemconfig(self.line_base, fill=base)
+        self.coords(self.line_core, self.x_left, self.cy, curr_x, self.cy)
+        self.itemconfig(self.line_core, fill=core)
+
+        if val > 0:
+            r = (self.bar_width - 4) / 2
+            self.coords(self.tip_dot, curr_x - r, self.cy - r, curr_x + r, self.cy + r)
+            self.itemconfig(self.tip_dot, fill=tip, state="normal")
+        else:
+            self.itemconfig(self.tip_dot, state="hidden")
+
+        self.itemconfig(self.pct_text, text=f"{int(val)}%", fill=core)
+
+        if val >= 99.9:
+            time_str = "Full"
+        else:
+            time_str = "--"
+            if reset_time and "Z" in reset_time:
+                try:
+                    dt = datetime.strptime(reset_time, "%Y-%m-%dT%H:%M:%SZ")
+                    now_utc = datetime.utcnow()
+                    if dt > now_utc:
+                        delta = dt - now_utc
+                        hours, remainder = divmod(delta.seconds, 3600)
+                        minutes = remainder // 60
+                        days = delta.days
+                        if days > 0:
+                            time_str = f"{days}d {hours}h"
+                        else:
+                            time_str = f"{hours}h {minutes}m"
+                    else:
+                        time_str = "Reset..."
+                except Exception:
+                    pass
+        self.itemconfig(self.time_text, text=time_str)
+
 
 class VerticalHistoryChart(tk.Canvas):
     def __init__(self, parent, width=100, height=140, **kwargs):
@@ -542,7 +651,7 @@ class UsageWidget:
         
         # Total width 134 (24 tab + 110 main)
         self.width = 134
-        self.base_height = 560
+        self.base_height = 598
         self.root.geometry(f"{self.width}x{self.base_height}")
         
         # We use SetWindowRgn for the precise shape, so no transparent color is needed
@@ -659,6 +768,13 @@ class UsageWidget:
         self.ext_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=44, height=150, title="EXT", is_gemini=False, text_side="right")
         self.ext_wk_gauge.place(x=57, y=0)
 
+        # Horizontal Argon Weekly Fuel Bar
+        self.argon_frame = tk.Frame(self.main_frame, bg=BG_COLOR, height=36)
+        self.argon_frame.pack(fill=tk.X, pady=(0, 2), padx=7)
+        self.argon_frame.pack_propagate(False)
+        self.argon_gauge = HorizontalFuelGauge(self.argon_frame, width=96, height=36, title="ARG")
+        self.argon_gauge.pack(fill=tk.BOTH, expand=True)
+
         # Vertical History Chart
         self.chart_frame = tk.Frame(self.main_frame, bg=SURFACE_COLOR, bd=0, highlightthickness=0)
         self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 8), padx=6)
@@ -755,9 +871,11 @@ class UsageWidget:
         
         g = data.get("gemini", {})
         e = data.get("external", {})
+        a = data.get("argon", {})
         
         g_wk_pct = g.get("weekly_percent", 0)
         e_wk_pct = e.get("weekly_percent", 0)
+        a_wk_pct = a.get("weekly_percent", 0)
         
         g_5h_pct = g.get("5hr_percent", 0)
         g_5h_time = g.get("reset_time_5h", "--")
@@ -770,6 +888,7 @@ class UsageWidget:
         
         self.gemini_wk_gauge.set_value(g_wk_pct, g.get("reset_time_weekly", "--"))
         self.ext_wk_gauge.set_value(e_wk_pct, e.get("reset_time_weekly", "--"))
+        self.argon_gauge.set_value(a_wk_pct, a.get("reset_time_weekly", "--"))
         
         history = history_logger.get_history(minutes=360)
         self.chart.render(history)
@@ -822,6 +941,7 @@ class UsageWidget:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    _acquire_single_instance_lock()
     app = UsageWidget()
     app.run()
 

@@ -211,6 +211,7 @@ def fetch_usage_data():
     result = {
         "gemini": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": ""},
         "external": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": ""},
+        "argon": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": "", "available": False},
         "last_updated": datetime.now().strftime("%H:%M:%S"),
     }
 
@@ -218,20 +219,30 @@ def fetch_usage_data():
         return result
 
     for group in data["response"].get("groups", []):
-        is_gemini = "Gemini" in group.get("displayName", "")
+        display_name = group.get("displayName", "")
+        is_argon = "argon" in display_name.lower()
+        is_gemini = ("gemini" in display_name.lower()) and not is_argon
+
         for bucket in group.get("buckets", []):
+            bucket_id = bucket.get("bucketId", "").lower()
+            if is_argon or "argon" in bucket_id:
+                key = "argon"
+                result["argon"]["available"] = True
+            elif is_gemini:
+                key = "gemini"
+            else:
+                key = "external"
+
             remaining = bucket.get("remainingFraction", 1)
             remaining_pct = round(remaining * 100, 1)
             used_pct = round((1 - remaining) * 100, 1)
             reset = bucket.get("resetTime", "")
 
             if bucket.get("window") == "5h":
-                key = "gemini" if is_gemini else "external"
                 result[key]["5hr_percent"] = remaining_pct
                 result[key]["5hr_used"] = used_pct
                 result[key]["reset_time_5h"] = reset
             elif bucket.get("window") == "weekly":
-                key = "gemini" if is_gemini else "external"
                 result[key]["weekly_percent"] = remaining_pct
                 result[key]["weekly_used"] = used_pct
                 result[key]["reset_time_weekly"] = reset
@@ -240,6 +251,8 @@ def fetch_usage_data():
     history_logger.log_usage(
         result["gemini"].get("5hr_percent", 100),
         result["external"].get("5hr_percent", 100),
+        result["argon"].get("weekly_percent") if result["argon"].get("available") else None,
     )
 
     return result
+
