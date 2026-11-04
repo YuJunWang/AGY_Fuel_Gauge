@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import http.client
 import socket
 import tempfile
 import unittest
@@ -115,6 +116,12 @@ class TestFetchUsage(unittest.TestCase):
         # 防網路錯誤 / 5xx / 逾時讓 widget 崩潰，應回報 offline
         for exc in (urllib.error.URLError("x"), socket.timeout(),
                     urllib.error.HTTPError("u", 503, "x", {}, None)):
+            (status, _), _ = self._run(side_effect=exc)
+            self.assertEqual(status, "offline")
+
+    def test_incomplete_read_is_offline(self):
+        # 防 resp.read() 中途斷線拋 HTTPException（非 OSError）讓 widget 崩潰
+        for exc in (http.client.IncompleteRead(b"x"), http.client.BadStatusLine("x")):
             (status, _), _ = self._run(side_effect=exc)
             self.assertEqual(status, "offline")
 
