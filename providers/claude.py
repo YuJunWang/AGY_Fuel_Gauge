@@ -5,6 +5,8 @@ Claude subscription usage via the OAuth usage endpoint (read-only; never writes 
 import http.client
 import json
 import os
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +16,9 @@ from pathlib import Path
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
 TIMEOUT = 5
+CLI_TIMEOUT_S = 20
+CLI_REFRESH_COOLDOWN_S = 600
+_last_cli_refresh = None  # time.monotonic() of the last CLI refresh attempt
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -50,6 +55,48 @@ def read_access_token(creds_path, now_ms):
     return token
 
 
+def has_login(creds_path):
+    """True if Claude Code holds a refresh token, i.e. an expired login can be renewed."""
+    try:
+        with open(creds_path, encoding="utf-8") as f:
+            refresh = json.load(f)["claudeAiOauth"]["refreshToken"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(refresh, str) and bool(refresh)
+
+
+def _find_cli():
+    found = shutil.which("claude")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "claude.exe"
+    return str(fallback) if fallback.exists() else None
+
+
+def refresh_via_cli(now_s):
+    """Ask Claude Code to renew its own token (it rewrites the credentials; we only re-read).
+    Rate-limited so a CLI that cannot refresh is not launched every fetch."""
+    global _last_cli_refresh
+    if _last_cli_refresh is not None and now_s - _last_cli_refresh < CLI_REFRESH_COOLDOWN_S:
+        return False
+    _last_cli_refresh = now_s
+    exe = _find_cli()
+    if not exe:
+        print("[claude] claude CLI not found; cannot renew login")
+        return False
+    try:
+        subprocess.run([exe, "auth", "status"], capture_output=True, timeout=CLI_TIMEOUT_S,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[claude] claude CLI refresh failed: {type(e).__name__}")
+        return False
+    return True
+
+
+def _cli_refresh(creds_path):
+    return has_login(creds_path) and refresh_via_cli(time.monotonic())
+
+
 def _bar(label, bucket):
     pct, reset = None, ""
     if isinstance(bucket, dict):
@@ -82,10 +129,22 @@ def fetch_usage(now_ms=None):
     """Return (status, bars). status: ok | login_required | offline | error."""
     if now_ms is None:
         now_ms = int(time.time() * 1000)
-    token = read_access_token(claude_dir() / ".credentials.json", now_ms)
+    creds = claude_dir() / ".credentials.json"
+    token = read_access_token(creds, now_ms)
+    if not token and _cli_refresh(creds):
+        token = read_access_token(creds, int(time.time() * 1000))
     if not token:
         print("[claude] no valid token; login required")
         return "login_required", {}
+    status, bars = _query_usage(token)
+    if status == "login_required" and _cli_refresh(creds):
+        fresh = read_access_token(creds, int(time.time() * 1000))
+        if fresh and fresh != token:
+            status, bars = _query_usage(fresh)
+    return status, bars
+
+
+def _query_usage(token):
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": BETA_HEADER,

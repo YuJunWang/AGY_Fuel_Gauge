@@ -25,7 +25,7 @@
 
 ### 非目標（YAGNI）
 - 不做外掛系統或設定檔；只支援 AGY 與 Claude 兩個來源。
-- 不刷新或改寫 Claude 的 OAuth token。
+- widget 不自行刷新或改寫 Claude 的 OAuth token（過期時改請 Claude Code CLI 自己換新，見 2.2）。
 - 不統計 claude.ai 網頁版聊天的 token（本機無資料）。
 - 不支援 Windows 以外的平台（既有限制不變）。
 
@@ -38,6 +38,7 @@
 - **端點**：`GET https://api.anthropic.com/api/oauth/usage`
 - **標頭**：`Authorization: Bearer <accessToken>`、`anthropic-beta: oauth-2025-04-20`
 - **Token 來源**：`~/.claude/.credentials.json` 的 `claudeAiOauth.accessToken`（使用者需先以 `claude` CLI 執行 `/login`）。**唯讀**，不寫回。
+- **過期換新（2026-11-04 追加）**：access token 約 8 小時過期。當 token 已過期、或端點回 401/403，且憑證含 `refreshToken` 時，widget 以背景程序（`CREATE_NO_WINDOW`、逾時 20 秒）執行 `claude auth status`，由 CLI 自行換新並寫回憑證，widget 再重新讀取；401 時若換到不同 token 則重試一次。每 10 分鐘最多嘗試一次。從未登入（無 `refreshToken`）時不呼叫 CLI。`claude setup-token` 的長期 token 只有 `user:inference` scope、缺 `user:profile`，無法查用量，故不採用。待驗證：`auth status` 是否確實觸發換新（於首次自然過期時觀察）；若否，改為執行一次極小的 CLI 請求。
 - **回應**（社群觀察，無官方文件）：各額度桶為 `{utilization: <已用 %>, resets_at: <ISO 8601>}` 或 `null`。
   - `five_hour` → Claude 5H 油量條
   - `seven_day` → Claude WK 油量條
@@ -162,7 +163,8 @@ tests/                 unittest 單元測試與 fixture
 |---|---|
 | AGY `language_server.exe` 未啟動 | AGY 快照 `offline`；AGY 欄保留舊值並變灰；Claude 照常 |
 | `.credentials.json` 不存在或無 `claudeAiOauth` | Claude `login_required` |
-| 端點回 401 / 403（token 過期） | Claude `login_required`；使用者下次開啟 `claude` 時 CLI 會自行刷新 |
+| token 已過期，或端點回 401 / 403 | 憑證含 `refreshToken` 時先請 CLI 換新（`claude auth status`，10 分鐘冷卻）並重讀；仍無有效 token 則 Claude `login_required` |
+| 找不到 `claude` CLI 或 CLI 逾時 | 不崩潰；Claude `login_required` |
 | 端點逾時、網路錯誤、5xx | Claude `offline` |
 | 端點回應格式改變 | 缺少的桶視為 `null`；全部缺失則 `error` |
 | JSONL 讀取失敗 | 略過該檔／該行，token 數僅反映可讀部分 |

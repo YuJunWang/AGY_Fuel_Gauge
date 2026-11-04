@@ -26,6 +26,7 @@ Most telemetry tools introduce unnecessary cognitive load with complex dashboard
 - **Token waveform**: Local Claude Code transcripts (`~/.claude/projects`) scanned into a 5-hour waveform. Cache reads are excluded. Read-only.
 - **Three modes**: `AGY` / `CLD` / `BOTH`. Click the left tab segments, or pick from the tray menu. Choice is remembered.
 - **Prerequisite**: Run the `claude` CLI and `/login` once. The desktop app login does not count.
+- **Token Renewal**: The login token expires every ~8 hours. The gauge quietly runs `claude auth status` in the background so the CLI renews it. If the panel still shows `LOGIN`, run `claude` once.
 - **Heads up**: The quota endpoint is unofficial and may change without notice. If it breaks, the panel never crashes: it shows `LOGIN` (with `/login`) when you are not logged in, and when offline it keeps the last values greyed out (or `--%` before any data).
 
 ## Compatibility
@@ -81,6 +82,7 @@ Restart Antigravity IDE. Gauge icon loads in system tray. Right-click to wake, h
 - **Token 波形**：掃描本機 Claude Code 對話紀錄（`~/.claude/projects`），畫出 5 小時波形。不計入快取讀取（cache read）。唯讀。
 - **三種模式**：`AGY` / `CLD` / `BOTH`。點左側分頁切換，或從系統匣選單選。選擇會被記住。
 - **前置條件**：用 `claude` CLI 執行一次 `/login`。桌面版 App 的登入不算。
+- **自動換新**：登入 token 約 8 小時過期。小工具會在背景執行 `claude auth status`，讓 CLI 自己換新。如果仍顯示 `LOGIN`，執行一次 `claude` 即可。
 - **注意**：額度端點為非官方，可能隨時變動。壞掉時面板不會當機：未登入時顯示 `LOGIN`（附 `/login` 提示）；離線時保留上次數值並變灰（尚無資料時顯示 `--%`）。
 
 ## 支援環境

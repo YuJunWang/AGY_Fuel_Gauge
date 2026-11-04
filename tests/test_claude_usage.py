@@ -93,7 +93,17 @@ class TestToken(unittest.TestCase):
         self.assertEqual(read_access_token(p, 2000), "t")
 
 
+def _no_cli(test):
+    # 防單元測試真的去執行使用者機器上的 claude CLI（使用者已登入時 has_login 為真）
+    p = patch.object(claude, "refresh_via_cli", return_value=False)
+    p.start()
+    test.addCleanup(p.stop)
+
+
 class TestFetchUsage(unittest.TestCase):
+    def setUp(self):
+        _no_cli(self)
+
     def test_no_token_is_login_required_without_network(self):
         # 防沒有 token 時仍打網路
         with patch.object(claude, "read_access_token", return_value=None), \
@@ -150,6 +160,9 @@ class TestFetchUsage(unittest.TestCase):
 
 
 class TestRedirectNotFollowed(unittest.TestCase):
+    def setUp(self):
+        _no_cli(self)
+
     def test_302_is_offline_and_token_not_forwarded(self):
         # 防端點 3xx 轉址時 urllib 把 Authorization 一併送到轉址目標（token 外洩）
         seen = []
@@ -183,6 +196,106 @@ class TestRedirectNotFollowed(unittest.TestCase):
         self.assertEqual(status, "offline")
         self.assertEqual(bars, {})
         self.assertEqual(seen, [("/usage", "Bearer tok")])
+
+
+OK_BODY = json.dumps({"five_hour": bucket(35.0), "seven_day": bucket(14.0)}).encode()
+
+
+class TestCliRefreshInFetch(unittest.TestCase):
+    """access token 每 8 小時過期；widget 只讀憑證，請 Claude Code CLI 自己換新。"""
+
+    def _fetch(self, tokens, opens, logged_in=True, refreshed=True):
+        with patch.object(claude, "read_access_token", side_effect=tokens), \
+             patch.object(claude, "has_login", return_value=logged_in), \
+             patch.object(claude, "refresh_via_cli", return_value=refreshed) as rc, \
+             patch.object(claude, "_open", side_effect=opens) as uo:
+            return fetch_usage(2000), rc, uo
+
+    def test_expired_login_refreshed_by_cli_then_ok(self):
+        # 防 token 過期後 widget 一直卡在 LOGIN，即使 CLI 能自動換新
+        (status, _), rc, uo = self._fetch([None, "new"], [io.BytesIO(OK_BODY)])
+        self.assertEqual(status, "ok")
+        rc.assert_called_once()
+        h = {k.lower(): v for k, v in uo.call_args[0][0].header_items()}
+        self.assertEqual(h["authorization"], "Bearer new")
+
+    def test_never_logged_in_does_not_run_cli(self):
+        # 防從未登入時每輪都啟動 CLI（沒有 refresh token，CLI 也換不出來）
+        (status, _), rc, uo = self._fetch([None], [], logged_in=False)
+        self.assertEqual(status, "login_required")
+        rc.assert_not_called()
+        uo.assert_not_called()
+
+    def test_refresh_still_expired_is_login_required(self):
+        # 防 CLI 換不到 token 時誤用過期 token 打網路
+        (status, _), _, uo = self._fetch([None, None], [])
+        self.assertEqual(status, "login_required")
+        uo.assert_not_called()
+
+    def test_401_refreshes_and_retries_once_with_new_token(self):
+        # 防伺服器提前作廢 token（401）時不嘗試換新
+        err = urllib.error.HTTPError("u", 401, "x", {}, None)
+        (status, _), rc, uo = self._fetch(["old", "new"], [err, io.BytesIO(OK_BODY)])
+        self.assertEqual(status, "ok")
+        self.assertEqual(uo.call_count, 2)
+
+    def test_401_same_token_after_refresh_does_not_retry(self):
+        # 防 CLI 沒換出新 token 時用同一個被拒的 token 重打
+        err = urllib.error.HTTPError("u", 401, "x", {}, None)
+        (status, _), _, uo = self._fetch(["old", "old"], [err])
+        self.assertEqual(status, "login_required")
+        self.assertEqual(uo.call_count, 1)
+
+
+class TestRefreshViaCli(unittest.TestCase):
+    def setUp(self):
+        claude._last_cli_refresh = None
+        self.addCleanup(setattr, claude, "_last_cli_refresh", None)
+
+    def test_runs_auth_status_hidden_without_token(self):
+        # 防 pythonw 下跳出主控台視窗，或把 token 放進命令列
+        with patch.object(claude, "_find_cli", return_value="C:/x/claude.exe"), \
+             patch("subprocess.run") as run:
+            self.assertTrue(claude.refresh_via_cli(1000.0))
+        args, kw = run.call_args
+        self.assertEqual(args[0], ["C:/x/claude.exe", "auth", "status"])
+        self.assertEqual(kw["creationflags"], getattr(claude.subprocess, "CREATE_NO_WINDOW", 0))
+        self.assertEqual(kw["timeout"], claude.CLI_TIMEOUT_S)
+
+    def test_cooldown_limits_attempts(self):
+        # 防 CLI 換不到 token 時每 3 分鐘都重跑一次 CLI
+        with patch.object(claude, "_find_cli", return_value="claude"), \
+             patch("subprocess.run") as run:
+            self.assertTrue(claude.refresh_via_cli(1000.0))
+            self.assertFalse(claude.refresh_via_cli(1000.0 + claude.CLI_REFRESH_COOLDOWN_S - 1))
+            self.assertTrue(claude.refresh_via_cli(1000.0 + claude.CLI_REFRESH_COOLDOWN_S))
+        self.assertEqual(run.call_count, 2)
+
+    def test_missing_cli_or_failure_returns_false(self):
+        # 防沒裝 CLI 或 CLI 逾時讓 widget 崩潰
+        with patch.object(claude, "_find_cli", return_value=None), \
+             patch("subprocess.run") as run:
+            self.assertFalse(claude.refresh_via_cli(1000.0))
+        run.assert_not_called()
+        claude._last_cli_refresh = None
+        with patch.object(claude, "_find_cli", return_value="claude"), \
+             patch("subprocess.run",
+                   side_effect=claude.subprocess.TimeoutExpired("claude", 20)):
+            self.assertFalse(claude.refresh_via_cli(5000.0))
+
+
+class TestHasLogin(unittest.TestCase):
+    def test_requires_refresh_token(self):
+        # 防只有 MCP 憑證（從未登入 Claude 帳號）時被當成「可換新」
+        d = Path(tempfile.mkdtemp())
+        p = d / ".credentials.json"
+        p.write_text(json.dumps({"claudeAiOauth": {"accessToken": "a", "refreshToken": "r"}}))
+        self.assertTrue(claude.has_login(p))
+        p.write_text(json.dumps({"mcpOAuth": {}}))
+        self.assertFalse(claude.has_login(p))
+        p.write_text("{oops")
+        self.assertFalse(claude.has_login(p))
+        self.assertFalse(claude.has_login(d / "missing.json"))
 
 
 if __name__ == "__main__":
