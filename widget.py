@@ -40,8 +40,10 @@ except Exception:
 
 import data_fetcher
 import history_logger
-from display_logic import (TOKENS_PER_BLOCK, bucket_drops, bucket_tokens,
-                           format_countdown, format_tokens)
+import display_logic
+from display_logic import (MODES, PANEL_WIDTH, STATE_FILE, TOKENS_PER_BLOCK,
+                           anchored_x, bucket_drops, bucket_tokens,
+                           format_countdown, format_tokens, mode_width)
 
 TRANSPARENT_COLOR = "#000001"
 BG_COLOR       = "#000000" # Pure Black
@@ -314,8 +316,9 @@ class HorizontalFuelGauge(_FuelGaugeBase):
         super().set_login()
         # "LOGIN" is wider than a percentage: centre "/login" in the gap left of it.
         title_bb, pct_bb = self.bbox(self.title_text), self.bbox(self.pct_text)
-        if title_bb and pct_bb:
-            self.coords(self.time_text, (title_bb[2] + pct_bb[0]) / 2, 9)
+        left = title_bb[2] if title_bb and self.itemcget(self.title_text, "text") else self.x_left - 2
+        if pct_bb:
+            self.coords(self.time_text, (left + pct_bb[0]) / 2, 9)
 
 
 class VerticalHistoryChart(tk.Canvas):
@@ -587,7 +590,6 @@ class SlidingToggle(tk.Canvas):
             self.after(16, lambda: self.animate(target_progress, next_progress))
 
 
-PANEL_WIDTH = 110
 PANEL_HEIGHT = 574  # window height 598 minus the 24px header
 
 
@@ -743,6 +745,7 @@ class ClaudePanel(tk.Frame):
         self.chart.pack(fill=tk.BOTH, expand=True)
 
         self.gauges = {"cl_5h": self.gauge_5h, "cl_wk": self.gauge_wk, "cl_model": self.model_gauge}
+        self._model_label = "--"
 
     def render_chart(self, history, events, now):
         has_5h = sum(1 for r in history if "claude_5h" in r) >= 2
@@ -752,8 +755,10 @@ class ClaudePanel(tk.Frame):
 
     def apply(self, snapshot, history, now):
         status = snapshot.get("status")
-        if status in ("ok", "login_required"):  # stale states keep the last model label
-            self.model_gauge.set_title((snapshot.get("bars", {}).get("cl_model") or {}).get("label", "--"))
+        if status == "ok":  # stale states keep the last model label
+            self._model_label = (snapshot.get("bars", {}).get("cl_model") or {}).get("label", "--")
+        # Login state blanks the title so "/login" and "LOGIN" are not cramped.
+        self.model_gauge.set_title("" if status == "login_required" else self._model_label)
         if status == "login_required":
             for gauge in self.gauges.values():
                 gauge.set_login()
@@ -762,6 +767,75 @@ class ClaudePanel(tk.Frame):
         extra = snapshot.get("extra", {})
         self.tokens_lbl.config(text=format_tokens(extra.get("today_tokens", 0)))
         self.render_chart(history, extra.get("token_events", []), now)
+
+
+def build_window_region(width):
+    """L-shaped rounded HRGN: main body x=24..width plus the 0..30 x 0..140 tab."""
+    gdi32 = ctypes.windll.gdi32
+    # Main body: x=24 to width, y=0 to 598, with 12px rounding (6px radius)
+    rgn_main = gdi32.CreateRoundRectRgn(24, 0, width, 598, 12, 12)
+    # Tab: x=0 to 30, y=0 to 140
+    rgn_tab = gdi32.CreateRoundRectRgn(0, 0, 30, 140, 12, 12)
+    # Patch regions to fix the notches created by overlapping rounded corners
+    rgn_top_patch = gdi32.CreateRectRgn(10, 0, 40, 12)      # Straight top edge
+    rgn_inner_patch = gdi32.CreateRectRgn(24, 120, 30, 150) # Sharp inner corner
+    # Combine them all
+    rgn_combined = gdi32.CreateRectRgn(0, 0, 0, 0)
+    gdi32.CombineRgn(rgn_combined, rgn_main, rgn_tab, 2) # RGN_OR
+    gdi32.CombineRgn(rgn_combined, rgn_combined, rgn_top_patch, 2)
+    gdi32.CombineRgn(rgn_combined, rgn_combined, rgn_inner_patch, 2)
+    for rgn in (rgn_main, rgn_tab, rgn_top_patch, rgn_inner_patch):
+        gdi32.DeleteObject(rgn)
+    return rgn_combined
+
+
+MODE_COLORS = {"agy": "#22C55E", "claude": "#D97757", "both": "#F8FAFC"}
+
+
+class ModeTab(tk.Canvas):
+    """24x140 tab with AGY / CLD / BOTH segments; a click switches mode, a drag moves the window."""
+
+    SEGMENTS = (("agy", "AGY", 0, 46), ("claude", "CLD", 46, 93), ("both", "BOTH", 93, 140))
+    DRAG_SLOP = 3
+
+    def __init__(self, parent, on_select, on_press, on_drag):
+        super().__init__(parent, width=24, height=140, bg=BG_COLOR, highlightthickness=0)
+        self.on_select, self.on_press, self.on_drag = on_select, on_press, on_drag
+        self.labels = {}
+        for mode, text, y0, y1 in self.SEGMENTS:
+            self.labels[mode] = self.create_text(12, (y0 + y1) / 2, text=text, fill=TEXT_MUTED,
+                                                 font=("Segoe UI", 7, "bold"), angle=270)
+        for y in (46, 93):
+            self.create_line(4, y, 20, y, fill="#1E293B", width=1)
+        self._press = None
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_motion)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+    def set_mode(self, mode):
+        for m, item in self.labels.items():
+            self.itemconfig(item, fill=MODE_COLORS[m] if m == mode else TEXT_MUTED)
+
+    def _on_press(self, event):
+        self._press = (event.x_root, event.y_root, event.y, False)
+        self.on_press(event)
+
+    def _on_motion(self, event):
+        if self._press is None:
+            return
+        x0, y0, y_local, dragged = self._press
+        if not dragged and max(abs(event.x_root - x0), abs(event.y_root - y0)) > self.DRAG_SLOP:
+            self._press = (x0, y0, y_local, True)
+        self.on_drag(event)
+
+    def _on_release(self, event):
+        press, self._press = self._press, None
+        if press is None or press[3]:
+            return
+        for mode, _, y0, y1 in self.SEGMENTS:
+            if y0 <= press[2] < y1:
+                self.on_select(mode)
+                return
 
 
 class UsageWidget:
@@ -783,33 +857,16 @@ class UsageWidget:
         
         # Create true L-shaped rounded window region using Windows API
         self.root.update_idletasks()
-        try:
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            # Main body: x=24 to 134, y=0 to base_height, with 12px rounding (6px radius)
-            rgn_main = ctypes.windll.gdi32.CreateRoundRectRgn(24, 0, 134, self.base_height, 12, 12)
-            # Tab: x=0 to 30, y=0 to 140
-            rgn_tab = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, 30, 140, 12, 12)
-            
-            # Patch regions to fix the notches created by overlapping rounded corners
-            rgn_top_patch = ctypes.windll.gdi32.CreateRectRgn(10, 0, 40, 12)      # Straight top edge
-            rgn_inner_patch = ctypes.windll.gdi32.CreateRectRgn(24, 120, 30, 150) # Sharp inner corner
-            
-            # Combine them all
-            rgn_combined = ctypes.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
-            ctypes.windll.gdi32.CombineRgn(rgn_combined, rgn_main, rgn_tab, 2) # RGN_OR
-            ctypes.windll.gdi32.CombineRgn(rgn_combined, rgn_combined, rgn_top_patch, 2)
-            ctypes.windll.gdi32.CombineRgn(rgn_combined, rgn_combined, rgn_inner_patch, 2)
-            
-            ctypes.windll.user32.SetWindowRgn(hwnd, rgn_combined, True)
-        except Exception as e:
-            pass
-            
+        self.apply_window_region()
+
         self.root.withdraw()
-        
+
         self.x = 0
         self.y = 0
-        
+
+        self.mode = display_logic.load_mode(STATE_FILE)
         self.build_ui()
+        self.set_mode(self.mode)
         self.setup_tray()
         
         self.is_fetching = False
@@ -818,14 +875,9 @@ class UsageWidget:
         
     def build_ui(self):
         # ── Protruding Tab (Top Left) ────────
-        self.tab_canvas = tk.Canvas(self.root, width=24, height=140, bg=BG_COLOR, highlightthickness=0)
-        self.tab_canvas.place(x=0, y=0)
-        self.tab_canvas.bind("<ButtonPress-1>", self.start_move)
-        self.tab_canvas.bind("<B1-Motion>", self.do_move)
-        
-        # Vertical Text reading top-to-bottom
-        self.tab_canvas.create_text(12, 70, text="AGY FUEL GAUGE", fill=TEXT_MUTED, font=("Segoe UI", 8, "bold"), angle=270)
-        
+        self.mode_tab = ModeTab(self.root, on_select=self.set_mode, on_press=self.start_move, on_drag=self.do_move)
+        self.mode_tab.place(x=0, y=0)
+
         # ── Main Content Body ──────────────────────────
         self.main_frame = tk.Frame(self.root, bg=BG_COLOR, highlightthickness=0)
         self.main_frame.place(x=24, y=0, width=110, height=self.base_height)
@@ -852,18 +904,59 @@ class UsageWidget:
         self.last_update_lbl = tk.Label(self.header, text="--:--", bg=HEADER_COLOR, fg=TEXT_MUTED, font=(DIGITAL_FONT, 7))
         self.last_update_lbl.pack(side=tk.LEFT, padx=6)
 
-        # Provider panels below the header (ClaudePanel is built but not shown yet).
+        # Provider panels below the header; set_mode decides which are placed.
         self.agy_panel = AgyPanel(self.main_frame)
         self.agy_panel.place(x=0, y=24, width=PANEL_WIDTH, height=PANEL_HEIGHT)
         self.claude_panel = ClaudePanel(self.main_frame)
-        self.visible_panel = self.agy_panel
+        self.visible_panels = [self.agy_panel]
 
         self.agy_panel.render_chart(history_logger.get_history(minutes=360), datetime.now())
 
     @property
+    def visible_panel(self):
+        """Leftmost panel on screen."""
+        return self.visible_panels[0]
+
+    @property
     def chart(self):
-        """Chart of the panel currently on screen (scanline animation target)."""
+        """Chart of the leftmost panel on screen."""
         return self.visible_panel.chart
+
+    def apply_window_region(self):
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            ctypes.windll.user32.SetWindowRgn(hwnd, build_window_region(self.width), True)
+        except Exception as e:
+            print(f"[widget] SetWindowRgn failed: {e}")
+
+    def set_mode(self, mode):
+        if mode not in MODES:
+            mode = "agy"
+        self.mode = mode
+        # Panels sit inside main_frame (root x=24): AGY at root x=24, CLD at 24 or 134.
+        panels = {"agy": [self.agy_panel], "claude": [self.claude_panel],
+                  "both": [self.agy_panel, self.claude_panel]}[mode]
+        for panel in (self.agy_panel, self.claude_panel):
+            if panel not in panels:
+                panel.place_forget()
+        for i, panel in enumerate(panels):
+            panel.place(x=i * PANEL_WIDTH, y=24, width=PANEL_WIDTH, height=PANEL_HEIGHT)
+        self.visible_panels = panels
+
+        new_w = mode_width(mode)
+        self.main_frame.place(x=24, y=0, width=new_w - 24, height=self.base_height)
+        if new_w != self.width:
+            x = anchored_x(self.root.winfo_x(), self.width, new_w, self.root.winfo_vrootx())
+            self.width = new_w
+            self.root.geometry(f"{new_w}x{self.base_height}+{x}+{self.root.winfo_y()}")
+            self.root.update_idletasks()
+        self.apply_window_region()
+
+        self.mode_tab.set_mode(mode)
+        icon = getattr(self, "icon", None)
+        if icon is not None:
+            icon.update_menu()
+        display_logic.save_mode(STATE_FILE, mode)
 
     def start_move(self, event):
         self.x = event.x
@@ -889,17 +982,23 @@ class UsageWidget:
     def setup_tray(self):
         menu = pystray.Menu(
             pystray.MenuItem('Show Widget', self.show_window, default=True),
+            *(self._mode_menu_item(m, label) for m, label in zip(MODES, ("AGY", "Claude", "Both"))),
             pystray.MenuItem('Refresh Now', self.trigger_refresh),
             pystray.MenuItem('Exit', self.exit_app)
         )
         self.icon = pystray.Icon("AGYMonitor", self.create_tray_icon(), "AGY Fuel Gauge", menu)
         threading.Thread(target=self.icon.run, daemon=True).start()
 
+    def _mode_menu_item(self, mode, label):
+        # pystray calls back on its own thread: hop to the Tk thread before touching widgets.
+        return pystray.MenuItem(label, lambda icon, item: self.root.after(0, self.set_mode, mode),
+                                checked=lambda item: self.mode == mode, radio=True)
+
     def show_window(self, icon=None, item=None):
         self.root.deiconify()
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        x = screen_width - self.width - 20
+        x = screen_width - mode_width(self.mode) - 20
         y = screen_height - self.base_height - 60
         self.root.geometry(f"+{x}+{y}")
         self.root.lift()
@@ -943,32 +1042,37 @@ class UsageWidget:
     def play_scanline_animation(self):
         # Subtle scanline sweeping across the chart area on each data refresh.
         # Thin neon-white-green polyline, variable speed with random jitter (creases).
-        scan_line = self.chart.create_line(0, 0, 0, 0, fill="#5C856D", width=1)
-        
+        # Charts are captured once: a mode switch mid-sweep must not retarget it.
+        # In BOTH mode one sweep drives a line on each chart, in lockstep.
+        charts = [p.chart for p in self.visible_panels]
+        scan_lines = [(c, c.create_line(0, 0, 0, 0, fill="#5C856D", width=1)) for c in charts]
+
         STEPS = 25  # Increased steps for a smoother, slower sweep
         def animate(step=0):
             if step > STEPS:
-                self.chart.delete(scan_line)
+                for chart, scan_line in scan_lines:
+                    chart.delete(scan_line)
                 return
-            base_y = (step / STEPS) * self.chart.height
-            
-            # Generate polyline coordinates for creases
-            coords = []
-            x_segments = [0, self.chart.width * 0.3, self.chart.width * 0.6, self.chart.width]
-            
-            for x in x_segments:
-                # Balanced jitter magnitude for visible but subtle creases
-                jitter = random.randint(-2, 2) if step > 0 and step < STEPS else 0
-                y = max(0, min(self.chart.height, base_y + jitter))
-                coords.extend([x, y])
-            
-            # Add glitch effect: randomly drop opacity/visibility for a frame
-            if random.random() < 0.15:
-                self.chart.itemconfig(scan_line, fill="#000000") # blend into background
-            else:
-                self.chart.itemconfig(scan_line, fill="#5C856D")
-                
-            self.chart.coords(scan_line, *coords)
+            for chart, scan_line in scan_lines:
+                base_y = (step / STEPS) * chart.height
+
+                # Generate polyline coordinates for creases
+                coords = []
+                x_segments = [0, chart.width * 0.3, chart.width * 0.6, chart.width]
+
+                for x in x_segments:
+                    # Balanced jitter magnitude for visible but subtle creases
+                    jitter = random.randint(-2, 2) if step > 0 and step < STEPS else 0
+                    y = max(0, min(chart.height, base_y + jitter))
+                    coords.extend([x, y])
+
+                # Add glitch effect: randomly drop opacity/visibility for a frame
+                if random.random() < 0.15:
+                    chart.itemconfig(scan_line, fill="#000000") # blend into background
+                else:
+                    chart.itemconfig(scan_line, fill="#5C856D")
+
+                chart.coords(scan_line, *coords)
             # Increased delay base to slow down the overall animation
             delay = random.randint(40, 90) # variable speed
             self.root.after(delay, lambda: animate(step + 1))

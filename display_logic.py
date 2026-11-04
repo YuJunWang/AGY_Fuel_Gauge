@@ -2,10 +2,46 @@
 
 No function here reads the clock: time always arrives as a parameter.
 """
+import json
 import math
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 TOKENS_PER_BLOCK = 20000  # calibrated in Task 9
+
+MODES = ("agy", "claude", "both")
+STATE_FILE = Path(__file__).with_name("widget_state.json")
+TAB_WIDTH = 24
+PANEL_WIDTH = 110
+
+
+def mode_width(mode):
+    """Window width: the 24px tab plus one 110px column per shown provider."""
+    return TAB_WIDTH + PANEL_WIDTH * (2 if mode == "both" else 1)
+
+
+def anchored_x(old_x, old_w, new_w, screen_left=0):
+    """New window x that keeps the right edge fixed, never past the screen's left edge."""
+    return max(screen_left, old_x + old_w - new_w)
+
+
+def load_mode(path):
+    """Saved display mode; a missing, corrupt or unknown state falls back to 'agy'."""
+    try:
+        mode = json.loads(Path(path).read_text(encoding="utf-8")).get("mode")
+    except FileNotFoundError:
+        return "agy"
+    except Exception as e:
+        print(f"[widget] unreadable mode state {path}: {e}")
+        return "agy"
+    return mode if mode in MODES else "agy"
+
+
+def save_mode(path, mode):
+    try:
+        Path(path).write_text(json.dumps({"mode": mode}), encoding="utf-8")
+    except OSError as e:
+        print(f"[widget] could not save mode state {path}: {e}")
 
 
 def format_countdown(pct, reset, now_utc):
