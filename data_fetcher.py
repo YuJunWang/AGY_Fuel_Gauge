@@ -27,7 +27,10 @@ def fetch_all():
     merged = {}
     merged.update(out["agy"]["history"])
     merged.update(out["claude"]["history"])
-    history_logger.log_usage(**merged)
+    try:
+        history_logger.log_usage(**merged)
+    except Exception as e:  # a history write failure must not hide fresh data
+        print(f"[data_fetcher] history log failed: {e}")
     out["last_updated"] = datetime.now().strftime("%H:%M:%S")
     return out
 

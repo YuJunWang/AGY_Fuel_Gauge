@@ -119,10 +119,10 @@ class QuotaFetcher:
                                 if port_str.isdigit():
                                     candidate_ports.append(int(port_str))
             except Exception as e:
-                print(f"[data_fetcher] Error discovering ports via netstat: {e}")
+                print(f"[agy] Error discovering ports via netstat: {e}")
 
         if not candidate_ports:
-            print("[data_fetcher] No listening ports found for language_server.exe.")
+            print("[agy] No listening ports found for language_server.exe.")
             return None, None
 
         candidate_ports = sorted(list(set(candidate_ports)))
@@ -181,7 +181,7 @@ class QuotaFetcher:
         # 1. Discover Token
         self.csrf_token = self._extract_csrf_token()
         if not self.csrf_token:
-            print("[data_fetcher] Could not locate CSRF token.")
+            print("[agy] Could not locate CSRF token.")
             return None
 
         # 2. Try cached port first
@@ -193,7 +193,7 @@ class QuotaFetcher:
         # 3. Discover Ports
         self.cdp_port, self.grpc_port = self._find_antigravity_ports()
         if not self.grpc_port:
-            print("[data_fetcher] Could not locate Antigravity gRPC port.")
+            print("[agy] Could not locate Antigravity gRPC port.")
             return None
 
         # 4. Query gRPC Endpoint
@@ -205,7 +205,7 @@ fetcher = QuotaFetcher()
 
 
 _BARS = (
-    # bar_id, group key, window key, label
+    # bar_id, group key, pct key, reset key, label
     ("gem_5h", "gemini", "5hr_percent", "reset_time_5h", "GEM"),
     ("ext_5h", "external", "5hr_percent", "reset_time_5h", "EXT"),
     ("gem_wk", "gemini", "weekly_percent", "reset_time_weekly", "GEM"),

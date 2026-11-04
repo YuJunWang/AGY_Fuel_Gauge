@@ -16,6 +16,20 @@ BETA_HEADER = "oauth-2025-04-20"
 TIMEOUT = 5
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so the bearer token is never forwarded to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then raises HTTPError(3xx), reported as offline
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(req, timeout):
+    return _OPENER.open(req, timeout=timeout)
+
+
 def claude_dir():
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
@@ -77,7 +91,7 @@ def fetch_usage(now_ms=None):
         "anthropic-beta": BETA_HEADER,
     })
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with _open(req, timeout=TIMEOUT) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -114,6 +128,8 @@ def _parse_event(line):
     """One JSONL line -> (dedup_key, local naive datetime, tokens) or None."""
     try:
         rec = json.loads(line)
+        if rec.get("type") != "assistant":  # spec 2.3: only assistant turns carry billed usage
+            return None
         msg = rec["message"]
         usage = msg["usage"]
         key = msg.get("id") or rec.get("requestId")

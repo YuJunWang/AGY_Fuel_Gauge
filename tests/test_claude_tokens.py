@@ -44,6 +44,14 @@ class TestScanner(Base):
         self.write([rec("m1", utc_iso(NOW - timedelta(minutes=10)), 10, 20, 30, 99999)])
         self.assertEqual([t for _, t in TokenScanner(self.dir).scan(NOW)], [60])
 
+    def test_only_assistant_records_counted(self):
+        # 防非 assistant 紀錄（如 user / summary 夾帶 message.usage）被重複計入 token（規格 2.3）
+        ts = utc_iso(NOW - timedelta(minutes=10))
+        other = json.loads(rec("u1", ts, out=500))
+        other["type"] = "user"
+        self.write([json.dumps(other), rec("m1", ts, out=7)])
+        self.assertEqual([t for _, t in TokenScanner(self.dir).scan(NOW)], [7])
+
     def test_dedup_by_message_id(self):
         # 防串流重複寫入把 token 量灌水
         ts = utc_iso(NOW - timedelta(minutes=10))

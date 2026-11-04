@@ -4,7 +4,9 @@ import os
 import http.client
 import socket
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -95,14 +97,14 @@ class TestFetchUsage(unittest.TestCase):
     def test_no_token_is_login_required_without_network(self):
         # 防沒有 token 時仍打網路
         with patch.object(claude, "read_access_token", return_value=None), \
-             patch("urllib.request.urlopen") as uo:
+             patch.object(claude, "_open") as uo:
             status, bars = fetch_usage(2000)
         self.assertEqual(status, "login_required")
         uo.assert_not_called()
 
     def _run(self, **kw):
         with patch.object(claude, "read_access_token", return_value="tok"), \
-             patch("urllib.request.urlopen", **kw) as uo:
+             patch.object(claude, "_open", **kw) as uo:
             return fetch_usage(2000), uo
 
     def test_401_is_login_required(self):
@@ -145,6 +147,42 @@ class TestFetchUsage(unittest.TestCase):
         self.assertEqual(h["authorization"], "Bearer tok")
         self.assertEqual(h["anthropic-beta"], "oauth-2025-04-20")
         self.assertEqual(uo.call_args.kwargs.get("timeout"), 5)
+
+
+class TestRedirectNotFollowed(unittest.TestCase):
+    def test_302_is_offline_and_token_not_forwarded(self):
+        # 防端點 3xx 轉址時 urllib 把 Authorization 一併送到轉址目標（token 外洩）
+        seen = []
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/usage":
+                    self.send_response(302)
+                    self.send_header("Location", "/elsewhere")
+                    self.end_headers()
+                else:
+                    body = json.dumps({"five_hour": bucket(1.0)}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_port}/usage"
+        with patch.object(claude, "read_access_token", return_value="tok"), \
+             patch.object(claude, "USAGE_URL", url), \
+             patch.dict(os.environ, {"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}):
+            status, bars = fetch_usage(2000)
+        self.assertEqual(status, "offline")
+        self.assertEqual(bars, {})
+        self.assertEqual(seen, [("/usage", "Bearer tok")])
 
 
 if __name__ == "__main__":

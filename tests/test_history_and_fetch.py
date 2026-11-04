@@ -63,6 +63,15 @@ class FetchAllTests(unittest.TestCase):
         self.assertRegex(out["last_updated"], r"^\d\d:\d\d:\d\d$")
         log.assert_called_once_with(**OK_CLAUDE["history"])
 
+    def test_log_failure_still_returns_snapshots(self):
+        # 防歷史檔寫入失敗（磁碟滿／權限）讓 fetch_all 拋例外，兩邊新資料都無法顯示
+        with patch("providers.agy.fetch", return_value=OK_CLAUDE), \
+             patch("providers.claude.fetch", return_value=OK_CLAUDE), \
+             patch("history_logger.log_usage", side_effect=OSError("disk full")):
+            out = data_fetcher.fetch_all()
+        self.assertEqual(out["agy"]["status"], "ok")
+        self.assertEqual(out["claude"]["status"], "ok")
+
 
 if __name__ == "__main__":
     unittest.main()
