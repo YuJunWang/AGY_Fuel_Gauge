@@ -3,11 +3,37 @@ data_fetcher.py — AGY Fuel Gauge
 Legacy adapter: quota fetching now lives in providers/agy.py.
 Kept (temporarily) so widget.py keeps receiving the old dict format.
 """
-from providers import agy
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import history_logger
+from providers import agy, claude
+
+
+def _error_snapshot():
+    return {"status": "error", "bars": {}, "history": {}, "extra": {}}
+
+
+def fetch_all():
+    """Fetch AGY and Claude in parallel; a failing source never affects the other."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {"agy": pool.submit(agy.fetch), "claude": pool.submit(claude.fetch)}
+    out = {}
+    for name, fut in futures.items():
+        try:
+            out[name] = fut.result()
+        except Exception as e:
+            print(f"[data_fetcher] {name} fetch failed: {e}")
+            out[name] = _error_snapshot()
+    merged = {}
+    merged.update(out["agy"]["history"])
+    merged.update(out["claude"]["history"])
+    history_logger.log_usage(**merged)
+    out["last_updated"] = datetime.now().strftime("%H:%M:%S")
+    return out
 
 
 def fetch_usage_data():
-    from datetime import datetime
     snap = agy.parse_quota(agy.fetcher.get_quota())
 
     result = {
@@ -37,11 +63,12 @@ def fetch_usage_data():
         result[grp][rk] = bar["reset"]
         result[grp][uk] = round(100 - bar["pct"], 1)
 
-    import history_logger
-    history_logger.log_usage(
-        result["gemini"].get("5hr_percent", 100),
-        result["external"].get("5hr_percent", 100),
-        result["argon"].get("weekly_percent") if result["argon"].get("available") else None,
-    )
+    fields = {
+        "gemini_5h": result["gemini"].get("5hr_percent", 100),
+        "external_5h": result["external"].get("5hr_percent", 100),
+    }
+    if result["argon"].get("available"):
+        fields["argon_wk"] = result["argon"].get("weekly_percent")
+    history_logger.log_usage(**fields)
 
     return result
