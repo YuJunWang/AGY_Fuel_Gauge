@@ -18,14 +18,41 @@ def _acquire_single_instance_lock():
     if ctypes.windll.kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
         sys.exit(0)
 
-# ── DPI Awareness ──────────────────────────────────────────────────────────
+# ── DPI Awareness & Dynamic Scaling ────────────────────────────────────────
 # Enable DPI awareness to bypass Windows Desktop Window Manager (DWM) scaling.
-# This forces 1 virtual pixel to map exactly to 1 physical pixel, 
+# This forces 1 virtual pixel to map exactly to 1 physical pixel,
 # mathematically eliminating any subpixel rounding gaps in rendering.
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
+
+def _detect_dpi_scale():
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        if dpi > 0:
+            return dpi / 96.0
+    except Exception:
+        pass
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX = 88
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi > 0:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+DPI_SCALE = _detect_dpi_scale()
+
+def S(val):
+    """Scale a 96-DPI base pixel value to physical integer pixels."""
+    return int(round(val * DPI_SCALE))
+
+def chart_row_step():
+    """Physical pixels per 3-minute chart row: an integer, so every row gets identical pixels."""
+    return max(3, int(round(3 * DPI_SCALE + 0.001)))
 
 # ── Load Bundled Monospace Font ───────────────────────────────────────────
 # Dynamically register bundled JetBrains Mono so it renders cleanly even if not installed in Windows.
@@ -41,7 +68,7 @@ except Exception:
 import data_fetcher
 import history_logger
 import display_logic
-from display_logic import (MODES, PANEL_WIDTH, STATE_FILE, TOKENS_PER_BLOCK,
+from display_logic import (MODES, STATE_FILE, TOKENS_PER_BLOCK,
                            anchored_x, bucket_drops, bucket_tokens, count_records,
                            format_countdown, format_tokens, mode_width, rate_color)
 
@@ -212,16 +239,19 @@ class _FuelGaugeBase(tk.Canvas):
 
 
 class VerticalFuelGauge(_FuelGaugeBase):
-    def __init__(self, parent, width=44, height=200, title="Title", theme_id="gem", text_side="right", **kwargs):
+    def __init__(self, parent, width=None, height=None, title="Title", theme_id="gem", text_side="right", **kwargs):
+        width = S(44) if width is None else width
+        height = S(200) if height is None else height
         super().__init__(parent, width=width, height=height, bg=BG_COLOR, highlightthickness=0, **kwargs)
         self.width = width
         self.height = height
         self._init_state(theme_id)
 
         # Dimensions for the vertical bar
-        self.bar_width = 12
-        self.padding_top = 35
-        self.padding_bottom = 40
+        self.bar_width = S(12)
+        self.core_width = max(2, self.bar_width - S(4))
+        self.padding_top = S(35)
+        self.padding_bottom = S(40)
 
         self.cx = self.width / 2
         self.y_bottom = self.height - self.padding_bottom
@@ -233,52 +263,57 @@ class VerticalFuelGauge(_FuelGaugeBase):
 
         # Reverted Glow (Base + Core)
         self.line_base = self.create_line(self.cx, self.y_bottom, self.cx, self.y_bottom, fill="#000", width=self.bar_width, capstyle=tk.ROUND)
-        self.line_core = self.create_line(self.cx, self.y_bottom, self.cx, self.y_bottom, fill="#000", width=self.bar_width - 4, capstyle=tk.ROUND)
+        self.line_core = self.create_line(self.cx, self.y_bottom, self.cx, self.y_bottom, fill="#000", width=self.core_width, capstyle=tk.ROUND)
         self.tip_dot = self.create_oval(0, 0, 0, 0, fill="#000", outline="", state="hidden")
 
         # Percentage (JetBrains Mono)
-        self.pct_text = self.create_text(self.cx, self.y_bottom + 18, text="--%", fill=TEXT_FG, font=(DIGITAL_FONT, 10, "bold"), justify="center")
+        self.pct_text = self.create_text(self.cx, self.y_bottom + S(18), text="--%", fill=TEXT_FG, font=(DIGITAL_FONT, 10, "bold"), justify="center")
 
-        self.title_text = self.create_text(self.cx, self.y_top - 16, text=title, fill=self._title_color, font=(DIGITAL_FONT, 8, "bold"), justify="center")
+        self.title_text = self.create_text(self.cx, self.y_top - S(16), text=title, fill=self._title_color, font=(DIGITAL_FONT, 8, "bold"), justify="center")
 
-        text_x = self.cx + 14 if text_side == "right" else self.cx - 14
+        text_x = self.cx + S(14) if text_side == "right" else self.cx - S(14)
         self.time_text = self.create_text(text_x, self.height / 2, text="--h", fill=TEXT_MUTED, font=(DIGITAL_FONT, 8), justify="center", angle=270)
 
     def _fill_coords(self, val):
-        # When val=0, leave a clean 2px stub so the track bottom is visible
-        curr_y = (self.y_bottom - 2) if val == 0.0 else (self.y_bottom - self.track_height * (val / 100.0))
+        # When val=0, leave a clean scaled stub so the track bottom is visible
+        stub = max(2, S(2))
+        curr_y = (self.y_bottom - stub) if val == 0.0 else (self.y_bottom - self.track_height * (val / 100.0))
         return (self.cx, self.y_bottom, self.cx, curr_y)
 
     def _tip_coords(self, coords):
-        r = (self.bar_width - 4) / 2
+        r = self.core_width / 2
         curr_y = coords[3]
         return (self.cx - r, curr_y - r, self.cx + r, curr_y + r)
 
 
 class HorizontalFuelGauge(_FuelGaugeBase):
-    def __init__(self, parent, width=96, height=36, title="ARG", theme_id="arg", **kwargs):
+    def __init__(self, parent, width=None, height=None, title="ARG", theme_id="arg", **kwargs):
+        width = S(96) if width is None else width
+        height = S(36) if height is None else height
         super().__init__(parent, width=width, height=height, bg=BG_COLOR, highlightthickness=0, **kwargs)
         self.width = width
         self.height = height
         self._init_state(theme_id)
 
-        self.bar_width = 10
-        self.x_left = 8
-        self.x_right = self.width - 8
+        self.bar_width = S(10)
+        self.core_width = max(2, self.bar_width - S(4))
+        self.x_left = S(8)
+        self.x_right = self.width - S(8)
         self.track_width = self.x_right - self.x_left
-        self.cy = 25
+        self.cy = S(25)
+        self.lbl_y = S(9)
 
         # Top telemetry labels: Title (Left), Reset Timer (Center), Percentage (Right)
         self.title_text = self.create_text(
-            self.x_left - 2, 9, text=title, fill=self._title_color,
+            self.x_left - S(2), self.lbl_y, text=title, fill=self._title_color,
             font=(DIGITAL_FONT, 8, "bold"), anchor="w"
         )
         self.time_text = self.create_text(
-            self.width / 2, 9, text="--", fill=TEXT_MUTED,
+            self.width / 2, self.lbl_y, text="--", fill=TEXT_MUTED,
             font=(DIGITAL_FONT, 7), anchor="center"
         )
         self.pct_text = self.create_text(
-            self.x_right + 2, 9, text="--%", fill=TEXT_FG,
+            self.x_right + S(2), self.lbl_y, text="--%", fill=TEXT_FG,
             font=(DIGITAL_FONT, 8, "bold"), anchor="e"
         )
 
@@ -295,48 +330,55 @@ class HorizontalFuelGauge(_FuelGaugeBase):
         )
         self.line_core = self.create_line(
             self.x_left, self.cy, self.x_left, self.cy,
-            fill="#000", width=self.bar_width - 4, capstyle=tk.ROUND
+            fill="#000", width=self.core_width, capstyle=tk.ROUND
         )
         self.tip_dot = self.create_oval(0, 0, 0, 0, fill="#000", outline="", state="hidden")
 
     def _fill_coords(self, val):
-        curr_x = (self.x_left + 2) if val == 0.0 else (self.x_left + self.track_width * (val / 100.0))
+        stub = max(2, S(2))
+        curr_x = (self.x_left + stub) if val == 0.0 else (self.x_left + self.track_width * (val / 100.0))
         return (self.x_left, self.cy, curr_x, self.cy)
 
     def _tip_coords(self, coords):
-        r = (self.bar_width - 4) / 2
+        r = self.core_width / 2
         curr_x = coords[2]
         return (curr_x - r, self.cy - r, curr_x + r, self.cy + r)
 
     def set_value(self, pct, reset, now_utc):
-        self.coords(self.time_text, self.width / 2, 9)
+        self.coords(self.time_text, self.width / 2, self.lbl_y)
         super().set_value(pct, reset, now_utc)
 
     def _clear(self, pct_text, time_text, color=TEXT_FG):
         # Undo set_login's shift (e.g. login -> offline); set_login re-shifts after this.
-        self.coords(self.time_text, self.width / 2, 9)
+        self.coords(self.time_text, self.width / 2, self.lbl_y)
         super()._clear(pct_text, time_text, color)
 
     def set_login(self):
         super().set_login()
         # "LOGIN" is wider than a percentage: centre "/login" in the gap left of it.
         title_bb, pct_bb = self.bbox(self.title_text), self.bbox(self.pct_text)
-        left = title_bb[2] if title_bb and self.itemcget(self.title_text, "text") else self.x_left - 2
+        left = title_bb[2] if title_bb and self.itemcget(self.title_text, "text") else self.x_left - S(2)
         if pct_bb:
-            self.coords(self.time_text, (left + pct_bb[0]) / 2, 9)
+            self.coords(self.time_text, (left + pct_bb[0]) / 2, self.lbl_y)
 
 
 class VerticalHistoryChart(tk.Canvas):
     """Two-sided burn chart. Values arrive pre-bucketed, in blocks (row 0 = newest)."""
 
-    def __init__(self, parent, width, height, left_colors, right_colors, left_text_color, right_text_color,
+    def __init__(self, parent, width=None, height=None, *, left_colors, right_colors, left_text_color, right_text_color,
                  left_hover, right_hover, left_rate, right_rate, left_alert=True, right_alert=True, **kwargs):
+        self.num_rows = 100
+        self.row_step = chart_row_step()
+        self.block_step = 3.0 * DPI_SCALE
+        self.y_top = S(10)
+        self.y_range = self.num_rows * self.row_step
+        self.y_bottom = self.y_top + self.y_range
+        width = S(96) if width is None else width
+        height = (self.y_bottom + S(15)) if height is None else height
         super().__init__(parent, width=width, height=height, bg="#000000", highlightthickness=0, **kwargs)
         self.width = width
         self.height = height
         self.buckets = []
-        self.y_top = 10
-        self.y_bottom = height - 15
         self.left_text_color = left_text_color
         self.right_text_color = right_text_color
         self.left_hover, self.right_hover = left_hover, right_hover
@@ -363,7 +405,8 @@ class VerticalHistoryChart(tk.Canvas):
             return tuple(min(255, int(c * factor + add)) for c in rgb)
 
         mid_x = int(self.width / 2)
-        BLOCK_STEP = 3
+        axis_l = mid_x - max(2, S(2))
+        axis_r = mid_x + max(3, S(3))
 
         self.grad_dim = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
         self.grad_bright = Image.new("RGBA", (self.width, self.height), (0,0,0,0))
@@ -374,11 +417,11 @@ class VerticalHistoryChart(tk.Canvas):
             c_low, c_mid, c_high = (hex2rgb(c) for c in colors)
             for b in range(11):
                 if side == "left":
-                    x_right = mid_x - 2 - (b * BLOCK_STEP)
-                    x_left = x_right - BLOCK_STEP
+                    x_right = round(axis_l - (b * self.block_step))
+                    x_left = round(axis_l - ((b + 1) * self.block_step))
                 else:
-                    x_left = mid_x + 3 + (b * BLOCK_STEP)
-                    x_right = x_left + BLOCK_STEP
+                    x_left = round(axis_r + (b * self.block_step))
+                    x_right = round(axis_r + ((b + 1) * self.block_step))
 
                 factor = b / 10.0
                 if factor <= 0.5:
@@ -406,70 +449,82 @@ class VerticalHistoryChart(tk.Canvas):
             right = [0.0] * n
 
         mid_x = int(self.width / 2)
-        self.y_top = 10
-        # Fixed 300px y-range: 100 rows x 3px, so the hour ticks align with the rows.
-        y_range = 300
+        self.y_top = S(10)
+        # Force y_range to be an exact integer multiple of num_rows (100 * row_step)
+        # so every 3-minute bucket gets an identical integer number of physical pixels.
+        y_range = self.num_rows * self.row_step
+        self.y_range = y_range
         self.y_bottom = self.y_top + y_range
 
         # Center axis line
-        self.create_line(mid_x, self.y_top, mid_x, self.y_bottom, fill="#1E293B", width=2)
+        self.create_line(mid_x, self.y_top, mid_x, self.y_bottom, fill="#1E293B", width=max(2, S(2)))
 
         # Time Ticks (Every 1h small, every 2h big)
         for h in range(1, 5):
             tick_y = int(self.y_top + (h / 5.0) * y_range)
             if h % 2 == 0:
                 # 2H, 4H (Big tick)
-                self.create_line(mid_x - 3, tick_y, mid_x + 3, tick_y, fill=TEXT_FG, width=1.5)
+                self.create_line(mid_x - S(3), tick_y, mid_x + S(3), tick_y, fill=TEXT_FG, width=max(1.5, 1.5 * DPI_SCALE))
             else:
                 # 1H, 3H, 5H (Small tick)
-                self.create_line(mid_x - 1, tick_y, mid_x + 1, tick_y, fill=TEXT_MUTED, width=1.0)
+                self.create_line(mid_x - max(1, S(1)), tick_y, mid_x + max(1, S(1)), tick_y, fill=TEXT_MUTED, width=max(1.0, 1.0 * DPI_SCALE))
 
         buckets = list(zip(left, right))
         self.buckets = buckets
 
-        # ABSOLUTE FIXED SCALE: 1 unit per full block. Max 10 blocks.
-        # Block rendering: 2px wide (full) or 1px wide (half), 1px gap -> Step is 3px
-        BLOCK_STEP = 3
+        # ABSOLUTE FIXED SCALE: 1 unit per full block (block_step px). Max 10 blocks.
+        axis_l = mid_x - max(2, S(2))
+        axis_r = mid_x + max(3, S(3))
 
-        # 1. Draw continuous polygon for the entire history
+        # 1. Draw continuous organic waveform polygon for the entire history.
+        # When two consecutive 3-minute buckets both have non-zero drops, insert a return-to-axis
+        # valley vertex at the bucket boundary (y_valley) so adjacent peaks never fuse into a flat block.
         mask_poly = Image.new("L", (self.width, self.height), 0)
         d_poly = ImageDraw.Draw(mask_poly)
 
-        pts_g = [(mid_x - 2, self.y_top)]
-        pts_e = [(mid_x + 3, self.y_top)]
+        pts_g = [(axis_l, self.y_top)]
+        pts_e = [(axis_r, self.y_top)]
 
         for idx, (g, e) in enumerate(buckets):
-            # cy is the exact center Y of this 3px block for the polygon point
-            cy = int(self.y_top + idx * 3 + 1.5)
+            y0 = self.y_top + idx * self.row_step
+            cy = y0 + (self.row_step - 1) // 2
+            y_valley = y0 + self.row_step - 1
 
             # LEFT
-            offset_g = min(10.0, g) * BLOCK_STEP
-            xg = round(mid_x - 2 - offset_g)
+            offset_g = min(10.0, g) * self.block_step
+            xg = round(axis_l - offset_g)
+            pts_g.append((xg, cy))
+            if idx + 1 < len(buckets) and g > 0 and buckets[idx + 1][0] > 0:
+                pts_g.append((axis_l, y_valley))
 
             # RIGHT
-            offset_e = min(10.0, e) * BLOCK_STEP
-            xe = round(mid_x + 3 + offset_e)
-
-            pts_g.append((xg, cy))
+            offset_e = min(10.0, e) * self.block_step
+            xe = round(axis_r + offset_e)
             pts_e.append((xe, cy))
+            if idx + 1 < len(buckets) and e > 0 and buckets[idx + 1][1] > 0:
+                pts_e.append((axis_r, y_valley))
 
-        pts_g.append((mid_x - 2, int(self.y_top + len(buckets) * 3)))
-        pts_e.append((mid_x + 3, int(self.y_top + len(buckets) * 3)))
+        pts_g.append((axis_l, self.y_bottom))
+        pts_e.append((axis_r, self.y_bottom))
 
         d_poly.polygon(pts_g, fill=255)
         d_poly.polygon(pts_e, fill=255)
 
-        # 2. Identify Overflow Spikes
+        # 2. Identify Overflow Spikes (>= 10.0 blocks)
         mask_over = Image.new("L", (self.width, self.height), 0)
         d_over = ImageDraw.Draw(mask_over)
 
         for idx, (g, e) in enumerate(buckets):
-            cy = int(self.y_top + idx * 3)
+            y0 = self.y_top + idx * self.row_step
 
             if g >= 10.0:
-                d_over.rectangle([0, cy, mid_x - 1, cy + 2], fill=255)
+                g_top = (y0 - self.row_step // 2) if (idx > 0 and buckets[idx - 1][0] == 0) else y0
+                g_bot = (y0 + self.row_step + self.row_step // 2 - 1) if (idx + 1 < len(buckets) and buckets[idx + 1][0] == 0) else (y0 + self.row_step - 2)
+                d_over.rectangle([0, max(0, g_top), mid_x - 1, min(self.height - 1, g_bot)], fill=255)
             if e >= 10.0:
-                d_over.rectangle([mid_x + 1, cy, self.width, cy + 2], fill=255)
+                e_top = (y0 - self.row_step // 2) if (idx > 0 and buckets[idx - 1][1] == 0) else y0
+                e_bot = (y0 + self.row_step + self.row_step // 2 - 1) if (idx + 1 < len(buckets) and buckets[idx + 1][1] == 0) else (y0 + self.row_step - 2)
+                d_over.rectangle([mid_x + 1, max(0, e_top), self.width, min(self.height - 1, e_bot)], fill=255)
 
         # 3. Intersect Masks
         # mask_bright gets only the polygon regions that intersect with overflow Y-coords
@@ -493,11 +548,11 @@ class VerticalHistoryChart(tk.Canvas):
         right_color = rate_color(right_hourly, self.right_text_color, self.right_alert)
 
         # Floating Burn Rates (Reading top-to-bottom)
-        self.create_text(8, self.height / 2, text=self.left_rate(left_hourly), fill=left_color, font=(DIGITAL_FONT, 8, "bold"), angle=270, anchor="center")
-        self.create_text(self.width-8, self.height / 2, text=self.right_rate(right_hourly), fill=right_color, font=(DIGITAL_FONT, 8, "bold"), angle=270, anchor="center")
+        self.create_text(S(8), self.height / 2, text=self.left_rate(left_hourly), fill=left_color, font=(DIGITAL_FONT, 8, "bold"), angle=270, anchor="center")
+        self.create_text(self.width - S(8), self.height / 2, text=self.right_rate(right_hourly), fill=right_color, font=(DIGITAL_FONT, 8, "bold"), angle=270, anchor="center")
 
         # -5H label pushed snugly below the bottom axis
-        self.create_text(mid_x, self.y_bottom + 13, text="-5H", fill="#94A3B8", font=("Segoe UI", 7, "bold"), anchor="s")
+        self.create_text(mid_x, self.y_bottom + S(13), text="-5H", fill="#94A3B8", font=("Segoe UI", 7, "bold"), anchor="s")
 
     def on_mouse_move(self, event):
         self.delete("tooltip")
@@ -508,32 +563,32 @@ class VerticalHistoryChart(tk.Canvas):
         if y < self.y_top or y >= self.y_bottom:
             return
 
-        idx = int((y - self.y_top) / 3)
+        idx = int((y - self.y_top) // self.row_step)
         if 0 <= idx < len(self.buckets):
             g, e = self.buckets[idx]
             if g == 0 and e == 0:
                 return
 
-            bucket_y = self.y_top + idx * 3
+            bucket_y = self.y_top + idx * self.row_step
 
-            # Direction 3: Subtle row highlight band (2px height)
-            self.create_rectangle(0, bucket_y - 1, self.width, bucket_y + 2, outline="#1E293B", fill="#1E293B", tags="tooltip")
+            # Direction 3: Subtle row highlight band
+            self.create_rectangle(0, bucket_y - 1, self.width, bucket_y + self.row_step - 1, outline="#1E293B", fill="#1E293B", tags="tooltip")
 
             # Crosshair line (rendered on top of the highlight band)
             self.create_line(0, bucket_y, self.width, bucket_y, fill="#475569", dash=(1, 2), tags="tooltip")
 
             # Clamp text_y within vertical bounds
-            text_y = max(self.y_top + 6, min(self.y_bottom - 6, y))
+            text_y = max(self.y_top + S(6), min(self.y_bottom - S(6), y))
 
             # Direction 1: Split labels — fixed left, fixed right
             for text, color, x, anchor_val in [
-                (self.left_hover(g), self.left_text_color, 2, "w"),
-                (self.right_hover(e), self.right_text_color, self.width - 2, "e"),
+                (self.left_hover(g), self.left_text_color, S(2), "w"),
+                (self.right_hover(e), self.right_text_color, self.width - S(2), "e"),
             ]:
                 lbl = self.create_text(x, text_y, text=text, fill=color, font=("Segoe UI", 7, "bold"), anchor=anchor_val, tags="tooltip")
                 bbox = self.bbox(lbl)
                 if bbox:
-                    bg = self.create_rectangle(bbox[0]-2, bbox[1]-1, bbox[2]+2, bbox[3]+1, fill="#0F172A", outline="", tags="tooltip")
+                    bg = self.create_rectangle(bbox[0] - S(2), bbox[1] - 1, bbox[2] + S(2), bbox[3] + 1, fill="#0F172A", outline="", tags="tooltip")
                     self.tag_lower(bg, lbl)
 
     def on_mouse_leave(self, event):
@@ -542,19 +597,23 @@ class VerticalHistoryChart(tk.Canvas):
 
 class SlidingToggle(tk.Canvas):
     def __init__(self, parent, command=None, *args, **kwargs):
-        tk.Canvas.__init__(self, parent, width=32, height=16, bg=BG_COLOR, highlightthickness=0, bd=0, *args, **kwargs)
+        self.w = S(32)
+        self.h = S(16)
+        self.pad = max(2, S(2))
+        self.knob_d = self.h - 2 * self.pad
+        tk.Canvas.__init__(self, parent, width=self.w, height=self.h, bg=BG_COLOR, highlightthickness=0, bd=0, *args, **kwargs)
         self.command = command
         self.is_on = False
-        
+
         # Draw pill background (using an oval left, oval right, and rectangle in middle)
         self.bg_color_off = "#333842"
         self.bg_color_on = "#3A4B6B" # Muted blue-grey, less prominent
-        self.create_oval(0, 0, 16, 16, fill=self.bg_color_off, outline="", tags="bg")
-        self.create_oval(16, 0, 32, 16, fill=self.bg_color_off, outline="", tags="bg")
-        self.create_rectangle(8, 0, 24, 16, fill=self.bg_color_off, outline="", tags="bg")
-        
+        self.create_oval(0, 0, self.h, self.h, fill=self.bg_color_off, outline="", tags="bg")
+        self.create_oval(self.w - self.h, 0, self.w, self.h, fill=self.bg_color_off, outline="", tags="bg")
+        self.create_rectangle(self.h // 2, 0, self.w - self.h // 2, self.h, fill=self.bg_color_off, outline="", tags="bg")
+
         # Draw slider circle
-        self.slider = self.create_oval(2, 2, 14, 14, fill="#FFFFFF", outline="")
+        self.slider = self.create_oval(self.pad, self.pad, self.pad + self.knob_d, self.pad + self.knob_d, fill="#FFFFFF", outline="")
         
         self.bind("<Button-1>", self.toggle)
         self.bind("<Enter>", lambda e: self.config(cursor="hand2"))
@@ -581,9 +640,10 @@ class SlidingToggle(tk.Canvas):
         if (step > 0 and next_progress >= target_progress) or (step < 0 and next_progress <= target_progress):
             next_progress = target_progress
             
-        # Update slider position (x goes from 2 to 18)
-        x_offset = 2 + (16 * next_progress)
-        self.coords(self.slider, x_offset, 2, x_offset + 12, 14)
+        # Update slider position
+        travel = self.w - self.h
+        x_offset = self.pad + (travel * next_progress)
+        self.coords(self.slider, x_offset, self.pad, x_offset + self.knob_d, self.pad + self.knob_d)
         
         # Update background color at midpoint
         if next_progress > 0.5:
@@ -594,9 +654,6 @@ class SlidingToggle(tk.Canvas):
         # Use tolerance check instead of exact float equality
         if abs(next_progress - target_progress) > 0.001:
             self.after(16, lambda: self.animate(target_progress, next_progress))
-
-
-PANEL_HEIGHT = 574  # window height 598 minus the 24px header
 
 
 def _apply_bars(snapshot, gauges, now_utc):
@@ -614,60 +671,61 @@ def _apply_bars(snapshot, gauges, now_utc):
 class AgyPanel(tk.Frame):
     """AGY column: 5H/WK toggle, GEM/EXT vertical bars, ARG bar, GEM/EXT burn chart."""
 
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG_COLOR, highlightthickness=0, width=PANEL_WIDTH, height=PANEL_HEIGHT)
+    def __init__(self, parent, width, height):
+        super().__init__(parent, bg=BG_COLOR, highlightthickness=0, width=width, height=height)
 
         # Toggle
         self.toggle_container = tk.Frame(self, bg=BG_COLOR, bd=0)
-        self.toggle_container.pack(pady=8)
+        self.toggle_container.pack(pady=S(8))
 
         self.lbl_5h = tk.Label(self.toggle_container, text="5H", font=("Segoe UI", 7, "bold"), bg=BG_COLOR, fg=TEXT_FG, cursor="hand2")
-        self.lbl_5h.pack(side=tk.LEFT, padx=4)
+        self.lbl_5h.pack(side=tk.LEFT, padx=S(4))
         self.lbl_5h.bind("<Button-1>", lambda e: self.set_view(False))
 
         self.toggle_switch = SlidingToggle(self.toggle_container, command=self.set_view)
         self.toggle_switch.pack(side=tk.LEFT)
 
         self.lbl_wk = tk.Label(self.toggle_container, text="WK", font=("Segoe UI", 7, "bold"), bg=BG_COLOR, fg=TEXT_MUTED, cursor="hand2")
-        self.lbl_wk.pack(side=tk.LEFT, padx=4)
+        self.lbl_wk.pack(side=tk.LEFT, padx=S(4))
         self.lbl_wk.bind("<Button-1>", lambda e: self.set_view(True))
 
         self.show_weekly = False
 
         # Vertical Fuel Bars
         self.bars_frame = tk.Frame(self, bg=BG_COLOR)
-        self.bars_frame.pack(fill=tk.X, pady=4)
+        self.bars_frame.pack(fill=tk.X, pady=S(4))
 
-        self.view_5h_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=150)
+        gauge_w, gauge_h = S(44), S(150)
+        self.view_5h_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=gauge_h)
         self.view_5h_frame.pack(fill=tk.X)
         self.view_5h_frame.pack_propagate(False)
-        self.gemini_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=44, height=150, title="GEM", theme_id="gem", text_side="left")
-        self.gemini_5h_gauge.place(x=9, y=0)
-        self.ext_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=44, height=150, title="EXT", theme_id="ext", text_side="right")
-        self.ext_5h_gauge.place(x=57, y=0)
+        self.gemini_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="GEM", theme_id="gem", text_side="left")
+        self.gemini_5h_gauge.place(x=S(9), y=0)
+        self.ext_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="EXT", theme_id="ext", text_side="right")
+        self.ext_5h_gauge.place(x=S(57), y=0)
 
-        self.view_wk_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=150)
+        self.view_wk_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=gauge_h)
         self.view_wk_frame.pack_propagate(False)
-        self.gemini_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=44, height=150, title="GEM", theme_id="gem", text_side="left")
-        self.gemini_wk_gauge.place(x=9, y=0)
-        self.ext_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=44, height=150, title="EXT", theme_id="ext", text_side="right")
-        self.ext_wk_gauge.place(x=57, y=0)
+        self.gemini_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="GEM", theme_id="gem", text_side="left")
+        self.gemini_wk_gauge.place(x=S(9), y=0)
+        self.ext_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="EXT", theme_id="ext", text_side="right")
+        self.ext_wk_gauge.place(x=S(57), y=0)
 
         # Horizontal Argon Weekly Fuel Bar
-        self.argon_frame = tk.Frame(self, bg=BG_COLOR, height=36)
-        self.argon_frame.pack(fill=tk.X, pady=(0, 2), padx=7)
+        self.argon_frame = tk.Frame(self, bg=BG_COLOR, height=S(36))
+        self.argon_frame.pack(fill=tk.X, pady=(0, S(2)), padx=S(7))
         self.argon_frame.pack_propagate(False)
-        self.argon_gauge = HorizontalFuelGauge(self.argon_frame, width=96, height=36, title="ARG", theme_id="arg")
+        self.argon_gauge = HorizontalFuelGauge(self.argon_frame, width=S(96), height=S(36), title="ARG", theme_id="arg")
         self.argon_gauge.pack(fill=tk.BOTH, expand=True)
 
         # Vertical History Chart
         self.chart_frame = tk.Frame(self, bg=SURFACE_COLOR, bd=0, highlightthickness=0)
-        self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 8), padx=6)
+        self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(S(4), S(8)), padx=S(6))
 
         pct_hover = lambda v: f"{v:.1f}%"
         pct_rate = lambda x: f"{round(x, 1)} %/h"
         self.chart = VerticalHistoryChart(
-            self.chart_frame, width=96, height=325,
+            self.chart_frame, width=S(96),
             left_colors=("#10B981", "#EAB308", "#EF4444"), right_colors=("#F97316", "#7C3AED", "#2563EB"),
             left_text_color=COLOR_GEM_SAFE, right_text_color=COLOR_EXT_SAFE,
             left_hover=pct_hover, right_hover=pct_hover, left_rate=pct_rate, right_rate=pct_rate)
@@ -708,40 +766,41 @@ class AgyPanel(tk.Frame):
 class ClaudePanel(tk.Frame):
     """Claude column: today's tokens, 5H/WK vertical bars, model bar, 5H-drop / token-rate chart."""
 
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG_COLOR, highlightthickness=0, width=PANEL_WIDTH, height=PANEL_HEIGHT)
+    def __init__(self, parent, width, height):
+        super().__init__(parent, bg=BG_COLOR, highlightthickness=0, width=width, height=height)
 
-        # Top row: same height as AgyPanel's toggle row (tallest of its labels and the 16px toggle).
+        # Top row: same height as AgyPanel's toggle row (tallest of its labels and the S(16) toggle).
         probe = tk.Label(self, text="5H", font=("Segoe UI", 7, "bold"))
-        row_h = max(16, probe.winfo_reqheight())
+        row_h = max(S(16), probe.winfo_reqheight())
         probe.destroy()
         self.top_row = tk.Frame(self, bg=BG_COLOR, bd=0, height=row_h)
-        self.top_row.pack(fill=tk.X, pady=8)
+        self.top_row.pack(fill=tk.X, pady=S(8))
         self.top_row.pack_propagate(False)
         self.tokens_lbl = tk.Label(self.top_row, text=format_tokens(0), font=(DIGITAL_FONT, 7), bg=BG_COLOR, fg=TEXT_MUTED)
         self.tokens_lbl.pack(expand=True)
 
         # Vertical Fuel Bars (5H and WK side by side, no toggle)
-        self.bars_frame = tk.Frame(self, bg=BG_COLOR, height=150)
-        self.bars_frame.pack(fill=tk.X, pady=4)
+        gauge_w, gauge_h = S(44), S(150)
+        self.bars_frame = tk.Frame(self, bg=BG_COLOR, height=gauge_h)
+        self.bars_frame.pack(fill=tk.X, pady=S(4))
         self.bars_frame.pack_propagate(False)
-        self.gauge_5h = VerticalFuelGauge(self.bars_frame, width=44, height=150, title="5H", theme_id="cl_5h", text_side="left")
-        self.gauge_5h.place(x=9, y=0)
-        self.gauge_wk = VerticalFuelGauge(self.bars_frame, width=44, height=150, title="WK", theme_id="cl_wk", text_side="right")
-        self.gauge_wk.place(x=57, y=0)
+        self.gauge_5h = VerticalFuelGauge(self.bars_frame, width=gauge_w, height=gauge_h, title="5H", theme_id="cl_5h", text_side="left")
+        self.gauge_5h.place(x=S(9), y=0)
+        self.gauge_wk = VerticalFuelGauge(self.bars_frame, width=gauge_w, height=gauge_h, title="WK", theme_id="cl_wk", text_side="right")
+        self.gauge_wk.place(x=S(57), y=0)
 
         # Horizontal model bar (OPS / SON)
-        self.model_frame = tk.Frame(self, bg=BG_COLOR, height=36)
-        self.model_frame.pack(fill=tk.X, pady=(0, 2), padx=7)
+        self.model_frame = tk.Frame(self, bg=BG_COLOR, height=S(36))
+        self.model_frame.pack(fill=tk.X, pady=(0, S(2)), padx=S(7))
         self.model_frame.pack_propagate(False)
-        self.model_gauge = HorizontalFuelGauge(self.model_frame, width=96, height=36, title="--", theme_id="cl_model")
+        self.model_gauge = HorizontalFuelGauge(self.model_frame, width=S(96), height=S(36), title="--", theme_id="cl_model")
         self.model_gauge.pack(fill=tk.BOTH, expand=True)
 
         # Vertical History Chart: left = 5H % drop, right = token blocks
         self.chart_frame = tk.Frame(self, bg=SURFACE_COLOR, bd=0, highlightthickness=0)
-        self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 8), padx=6)
+        self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(S(4), S(8)), padx=S(6))
         self.chart = VerticalHistoryChart(
-            self.chart_frame, width=96, height=325,
+            self.chart_frame, width=S(96),
             left_colors=("#A78BFA", "#E879F9", "#EF4444"), right_colors=("#818CF8", "#3B82F6", "#22D3EE"),
             left_text_color="#A78BFA", right_text_color="#818CF8",
             left_hover=lambda v: f"{v:.1f}%",
@@ -776,16 +835,18 @@ class ClaudePanel(tk.Frame):
         self.render_chart(history, extra.get("token_events", []), now)
 
 
-def build_window_region(width):
-    """L-shaped rounded HRGN: main body x=24..width plus the 0..30 x 0..140 tab."""
+def build_window_region(width, height):
+    """L-shaped rounded HRGN: main body x=S(24)..width plus the 0..S(30) x 0..S(140) tab."""
     gdi32 = ctypes.windll.gdi32
-    # Main body: x=24 to width, y=0 to 598, with 12px rounding (6px radius)
-    rgn_main = gdi32.CreateRoundRectRgn(24, 0, width, 598, 12, 12)
-    # Tab: x=0 to 30, y=0 to 140
-    rgn_tab = gdi32.CreateRoundRectRgn(0, 0, 30, 140, 12, 12)
+    tab_w = S(24)
+    corner_r = S(12)
+    # Main body: x=tab_w to width, y=0 to height
+    rgn_main = gdi32.CreateRoundRectRgn(tab_w, 0, width, height, corner_r, corner_r)
+    # Tab: x=0 to S(30), y=0 to S(140)
+    rgn_tab = gdi32.CreateRoundRectRgn(0, 0, S(30), S(140), corner_r, corner_r)
     # Patch regions to fix the notches created by overlapping rounded corners
-    rgn_top_patch = gdi32.CreateRectRgn(10, 0, 40, 12)      # Straight top edge
-    rgn_inner_patch = gdi32.CreateRectRgn(24, 120, 30, 150) # Sharp inner corner
+    rgn_top_patch = gdi32.CreateRectRgn(S(10), 0, S(40), corner_r)          # Straight top edge
+    rgn_inner_patch = gdi32.CreateRectRgn(tab_w, S(120), S(30), S(150)) # Sharp inner corner
     # Combine them all
     rgn_combined = gdi32.CreateRectRgn(0, 0, 0, 0)
     gdi32.CombineRgn(rgn_combined, rgn_main, rgn_tab, 2) # RGN_OR
@@ -800,20 +861,24 @@ MODE_COLORS = {"agy": "#22C55E", "claude": "#D97757", "both": "#F8FAFC"}
 
 
 class ModeTab(tk.Canvas):
-    """24x140 tab with AGY / CLD / BOTH segments; a click switches mode, a drag moves the window."""
+    """S(24)xS(140) tab with AGY / CLD / BOTH segments; a click switches mode, a drag moves the window."""
 
-    SEGMENTS = (("agy", "AGY", 0, 46), ("claude", "CLD", 46, 93), ("both", "BOTH", 93, 140))
+    SEGMENTS = (("agy", "AGY", 0, 46), ("claude", "CLD", 46, 93), ("both", "BOTH", 93, 140))  # 96-DPI y ranges
     DRAG_SLOP = 3
 
     def __init__(self, parent, on_select, on_press, on_drag):
-        super().__init__(parent, width=24, height=140, bg=BG_COLOR, highlightthickness=0)
+        tab_w = S(24)
+        super().__init__(parent, width=tab_w, height=S(140), bg=BG_COLOR, highlightthickness=0)
         self.on_select, self.on_press, self.on_drag = on_select, on_press, on_drag
+        # Segment boundaries in physical pixels (scaled once, at the DPI the tab was built with).
+        self.segments = [(mode, text, S(y0), S(y1)) for mode, text, y0, y1 in self.SEGMENTS]
+        self.drag_slop = S(self.DRAG_SLOP)
         self.labels = {}
-        for mode, text, y0, y1 in self.SEGMENTS:
-            self.labels[mode] = self.create_text(12, (y0 + y1) / 2, text=text, fill=TEXT_MUTED,
+        for mode, text, y0, y1 in self.segments:
+            self.labels[mode] = self.create_text(tab_w / 2, (y0 + y1) / 2, text=text, fill=TEXT_MUTED,
                                                  font=("Segoe UI", 7, "bold"), angle=270)
-        for y in (46, 93):
-            self.create_line(4, y, 20, y, fill="#1E293B", width=1)
+        for _, _, y, _ in self.segments[1:]:
+            self.create_line(S(4), y, S(20), y, fill="#1E293B", width=S(1))
         self._press = None
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_motion)
@@ -831,7 +896,7 @@ class ModeTab(tk.Canvas):
         if self._press is None:
             return
         x0, y0, y_local, dragged = self._press
-        if not dragged and max(abs(event.x_root - x0), abs(event.y_root - y0)) > self.DRAG_SLOP:
+        if not dragged and max(abs(event.x_root - x0), abs(event.y_root - y0)) > self.drag_slop:
             self._press = (x0, y0, y_local, True)
         self.on_drag(event)
 
@@ -839,7 +904,7 @@ class ModeTab(tk.Canvas):
         press, self._press = self._press, None
         if press is None or press[3]:
             return
-        for mode, _, y0, y1 in self.SEGMENTS:
+        for mode, _, y0, y1 in self.segments:
             if y0 <= press[2] < y1:
                 self.on_select(mode)
                 return
@@ -850,9 +915,21 @@ class UsageWidget:
         self.root = tk.Tk()
         self.root.title("AGY Fuel Gauge")
         
-        # Total width 134 (24 tab + 110 main)
-        self.width = 134
-        self.base_height = 598
+        # Sync Tkinter font point-to-pixel scaling explicitly with detected DPI_SCALE
+        try:
+            self.root.tk.call('tk', 'scaling', (96.0 / 72.0) * DPI_SCALE)
+        except Exception:
+            pass
+
+        # Single-mode width 134 at 96 DPI (24 tab + 110 panel), scaled proportionally by DPI_SCALE;
+        # BOTH mode adds a second panel (set_mode).
+        self.tab_w = S(24)
+        self.panel_w = S(110)
+        self.header_h = S(24)
+        self.width = self.tab_w + self.panel_w
+        self.chart_h = S(10) + (100 * chart_row_step()) + S(15)
+        self.base_height = S(273) + self.chart_h
+        self.panel_h = self.base_height - self.header_h
         self.root.geometry(f"{self.width}x{self.base_height}")
         
         # We use SetWindowRgn for the precise shape, so no transparent color is needed
@@ -888,34 +965,34 @@ class UsageWidget:
 
         # ── Main Content Body ──────────────────────────
         self.main_frame = tk.Frame(self.root, bg=BG_COLOR, highlightthickness=0)
-        self.main_frame.place(x=24, y=0, width=110, height=self.base_height)
+        self.main_frame.place(x=self.tab_w, y=0, width=self.panel_w, height=self.base_height)
 
         # Header
-        self.header = tk.Frame(self.main_frame, bg=HEADER_COLOR, height=24)
+        self.header = tk.Frame(self.main_frame, bg=HEADER_COLOR, height=self.header_h)
         self.header.pack(fill=tk.X)
         self.header.pack_propagate(False)
         self.header.bind("<ButtonPress-1>", self.start_move)
         self.header.bind("<B1-Motion>", self.do_move)
-        
+
         close_btn = tk.Label(self.header, text="✕", bg=HEADER_COLOR, fg=TEXT_MUTED, font=("Segoe UI", 8), cursor="hand2")
-        close_btn.pack(side=tk.RIGHT, padx=6)
+        close_btn.pack(side=tk.RIGHT, padx=S(6))
         close_btn.bind("<Button-1>", lambda e: self.hide_window())
         close_btn.bind("<Enter>", lambda e: close_btn.config(fg=COLOR_EXT_DANGER))
         close_btn.bind("<Leave>", lambda e: close_btn.config(fg=TEXT_MUTED))
         
         self.refresh_btn = tk.Label(self.header, text="↻", bg=HEADER_COLOR, fg=TEXT_MUTED, font=("Segoe UI", 9), cursor="hand2")
-        self.refresh_btn.pack(side=tk.RIGHT, padx=2)
+        self.refresh_btn.pack(side=tk.RIGHT, padx=S(2))
         self.refresh_btn.bind("<Button-1>", lambda e: self.trigger_refresh())
         self.refresh_btn.bind("<Enter>", lambda e: self.refresh_btn.config(fg=TEXT_FG))
         self.refresh_btn.bind("<Leave>", lambda e: self.refresh_btn.config(fg=TEXT_MUTED if not getattr(self, "is_fetching", False) else COLOR_GEM_SAFE))
         
         self.last_update_lbl = tk.Label(self.header, text="--:--", bg=HEADER_COLOR, fg=TEXT_MUTED, font=(DIGITAL_FONT, 7))
-        self.last_update_lbl.pack(side=tk.LEFT, padx=6)
+        self.last_update_lbl.pack(side=tk.LEFT, padx=S(6))
 
         # Provider panels below the header; set_mode decides which are placed.
-        self.agy_panel = AgyPanel(self.main_frame)
-        self.agy_panel.place(x=0, y=24, width=PANEL_WIDTH, height=PANEL_HEIGHT)
-        self.claude_panel = ClaudePanel(self.main_frame)
+        self.agy_panel = AgyPanel(self.main_frame, self.panel_w, self.panel_h)
+        self.agy_panel.place(x=0, y=self.header_h, width=self.panel_w, height=self.panel_h)
+        self.claude_panel = ClaudePanel(self.main_frame, self.panel_w, self.panel_h)
         self.visible_panels = [self.agy_panel]
 
         self.agy_panel.render_chart(history_logger.get_history(minutes=360), datetime.now())
@@ -933,7 +1010,7 @@ class UsageWidget:
     def apply_window_region(self):
         try:
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            ctypes.windll.user32.SetWindowRgn(hwnd, build_window_region(self.width), True)
+            ctypes.windll.user32.SetWindowRgn(hwnd, build_window_region(self.width, self.base_height), True)
         except Exception as e:
             print(f"[widget] SetWindowRgn failed: {e}")
 
@@ -941,18 +1018,18 @@ class UsageWidget:
         if mode not in MODES:
             mode = "agy"
         self.mode = mode
-        # Panels sit inside main_frame (root x=24): AGY at root x=24, CLD at 24 or 134.
+        # Panels sit inside main_frame (root x=tab_w): AGY at root x=tab_w, CLD at tab_w or tab_w+panel_w.
         panels = {"agy": [self.agy_panel], "claude": [self.claude_panel],
                   "both": [self.agy_panel, self.claude_panel]}[mode]
         for panel in (self.agy_panel, self.claude_panel):
             if panel not in panels:
                 panel.place_forget()
         for i, panel in enumerate(panels):
-            panel.place(x=i * PANEL_WIDTH, y=24, width=PANEL_WIDTH, height=PANEL_HEIGHT)
+            panel.place(x=i * self.panel_w, y=self.header_h, width=self.panel_w, height=self.panel_h)
         self.visible_panels = panels
 
-        new_w = mode_width(mode)
-        self.main_frame.place(x=24, y=0, width=new_w - 24, height=self.base_height)
+        new_w = mode_width(mode, self.tab_w, self.panel_w)
+        self.main_frame.place(x=self.tab_w, y=0, width=new_w - self.tab_w, height=self.base_height)
         if new_w != self.width:
             x = anchored_x(self.root.winfo_x(), self.width, new_w, self.root.winfo_vrootx())
             self.width = new_w
@@ -1006,8 +1083,8 @@ class UsageWidget:
         self.root.deiconify()
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        x = screen_width - mode_width(self.mode) - 20
-        y = screen_height - self.base_height - 60
+        x = screen_width - mode_width(self.mode, self.tab_w, self.panel_w) - S(20)
+        y = screen_height - self.base_height - S(60)
         self.root.geometry(f"+{x}+{y}")
         self.root.lift()
         self.trigger_refresh()

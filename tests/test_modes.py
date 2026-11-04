@@ -10,6 +10,10 @@ class ModeTests(unittest.TestCase):
         # 防 BOTH 模式少一欄或單一模式多出空白：24 標籤 + 每欄 110
         self.assertEqual([mode_width(m) for m in MODES], [134, 134, 244])
 
+    def test_widths_scaled(self):
+        # 防高 DPI 下 BOTH 模式寬度與單欄不一致：widget 傳入 S(24)=36、S(110)=165（150%）
+        self.assertEqual([mode_width(m, 36, 165) for m in MODES], [201, 201, 366])
+
     def test_anchored_x_keeps_right_edge(self):
         # 防切換模式時視窗右緣跳動：加寬往左長，縮窄回到原位
         self.assertEqual(anchored_x(1000, 134, 244), 890)

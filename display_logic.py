@@ -15,9 +15,10 @@ TAB_WIDTH = 24
 PANEL_WIDTH = 110
 
 
-def mode_width(mode):
-    """Window width: the 24px tab plus one 110px column per shown provider."""
-    return TAB_WIDTH + PANEL_WIDTH * (2 if mode == "both" else 1)
+def mode_width(mode, tab_w=TAB_WIDTH, panel_w=PANEL_WIDTH):
+    """Window width: the tab plus one column per shown provider (24 + 110 each at 96 DPI;
+    the widget passes its DPI-scaled sizes)."""
+    return tab_w + panel_w * (2 if mode == "both" else 1)
 
 
 def anchored_x(old_x, old_w, new_w, screen_left=0):
@@ -108,8 +109,10 @@ def bucket_drops(history, key, now, num_rows, total_minutes):
     d = total_minutes / num_rows
     out = []
     for i in range(num_rows):
-        b_end = now - timedelta(minutes=i * d)
-        b_start = now - timedelta(minutes=(i + 1) * d)
+        # Row i is centred on now - i*d (+-d/2; row 0 is the half-row up to now), so samples
+        # polled every d minutes land mid-row instead of on a row edge.
+        b_end = now if i == 0 else now - timedelta(minutes=(i - 0.5) * d)
+        b_start = now - timedelta(minutes=(i + 0.5) * d)
         before = [v for ts, v in parsed if ts <= b_start]
         in_win = [v for ts, v in parsed if b_start < ts <= b_end]
         if in_win:
@@ -121,13 +124,16 @@ def bucket_drops(history, key, now, num_rows, total_minutes):
 
 
 def bucket_tokens(events, now, num_rows, total_minutes, unit):
-    """Token totals per row in blocks of `unit`; row i covers (now-(i+1)d, now-i*d]."""
+    """Token totals per row in blocks of `unit`, on bucket_drops' centred rows:
+    row 0 covers (now-d/2, now], row i covers (now-(i+0.5)d, now-(i-0.5)d]."""
     d = total_minutes / num_rows
     sums = [0.0] * num_rows
     for ts, n in events:
         age = (now - ts).total_seconds() / 60.0
-        if age < 0 or age > total_minutes:
+        if age < 0:
             continue
-        i = min(max(math.ceil(age / d) - 1, 0), num_rows - 1)
+        i = math.floor(age / d + 0.5)
+        if i >= num_rows:  # older than the last row's start, now-(num_rows-0.5)d
+            continue
         sums[i] += n
     return [s / unit for s in sums]

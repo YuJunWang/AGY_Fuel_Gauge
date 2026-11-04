@@ -60,16 +60,41 @@ class DisplayLogicTests(unittest.TestCase):
         h = [rec(NOW - mins(9), gemini_5h=90), rec(NOW - mins(3), gemini_5h=80)]
         self.assertEqual(sum(bucket_drops(h, "claude_5h", NOW, 100, 300.0)), 0)
 
+    def test_bucket_drops_rows_are_centred(self):
+        # 防 3 分鐘輪詢點落在格子邊界而讓相鄰尖峰錯位／融合（e1191a4）：第 i 格以 now-3i 分為中心 ±1.5 分。
+        # 手算：d=3 分。第 0 格 (now-1.5, now]；第 1 格 (now-4.5, now-1.5]。
+        #   1.4 分前 → 第 0 格；1.5 分前（剛好在邊界）→ 第 1 格；4.4 分前 → 第 1 格；4.5 分前 → 第 2 格。
+        for age, row in ((1.4, 0), (1.5, 1), (4.4, 1), (4.5, 2)):
+            h = [rec(NOW - mins(299), claude_5h=100), rec(NOW - mins(age), claude_5h=99)]
+            out = bucket_drops(h, "claude_5h", NOW, 100, 300.0)
+            self.assertEqual(out.index(1), row, f"age {age}")
+            self.assertEqual(sum(out), 1)
+
     def test_bucket_tokens_alignment(self):
-        # Review Focus 3：事件落在正確的格子（第 0 格為最新）
+        # Review Focus 3：事件落在正確的格子（第 0 格為最新），格界與 bucket_drops 相同（置中）。
+        # 手算：1 分前 → 第 0 格 (now-1.5, now]：40000/20000 = 2.0 格；
+        #       7 分前 → 第 2 格 (now-7.5, now-4.5]：10000/20000 = 0.5 格。
         ev = [(NOW - mins(1), 40000), (NOW - mins(7), 10000)]
         out = bucket_tokens(ev, NOW, 100, 300.0, 20000)
         self.assertEqual(out[0], 2.0)
         self.assertEqual(out[2], 0.5)
+        self.assertEqual(sum(out), 2.5)
+
+    def test_bucket_tokens_rows_match_bucket_drops(self):
+        # 防 Claude 圖表左右兩半錯位：同一時刻的 5H 下降與 token 事件必須落在同一列。
+        # 手算邊界：0 分前 → 第 0 格；1.5 分前 → 第 1 格（屬於較舊那格，與 drops 的 ts <= b_end 一致）；
+        #   298 分前 → 第 99 格 (now-298.5, now-295.5]。
+        for age in (0, 1.4, 1.5, 4.5, 7, 298):
+            drops = bucket_drops([rec(NOW - mins(299), claude_5h=100), rec(NOW - mins(age), claude_5h=99)],
+                                 "claude_5h", NOW, 100, 300.0)
+            toks = bucket_tokens([(NOW - mins(age), 20000)], NOW, 100, 300.0, 20000)
+            self.assertEqual(toks.index(1.0), drops.index(1), f"age {age}")
 
     def test_bucket_tokens_ignores_out_of_window(self):
         # 防視窗外（太舊或未來）的事件被塞進首/末格造成假尖峰或 IndexError
-        ev = [(NOW - mins(301), 99999), (NOW + mins(5), 99999), (NOW - mins(1), 20000)]
+        # 手算：最後一格 (第 99 格) 起點為 now-298.5 分，298.5 分前已在視窗外（與 bucket_drops 相同）。
+        ev = [(NOW - mins(301), 99999), (NOW - mins(298.5), 99999), (NOW + mins(5), 99999),
+              (NOW - mins(1), 20000)]
         out = bucket_tokens(ev, NOW, 100, 300.0, 20000)
         self.assertEqual(len(out), 100)
         self.assertAlmostEqual(sum(out), 1.0)
