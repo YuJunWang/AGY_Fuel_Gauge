@@ -1,0 +1,152 @@
+[
+ {
+  "timestamp": "2026-10-16T11:33:00",
+  "gemini_5h": 100.0,
+  "external_5h": 100.0
+ },
+ {
+  "timestamp": "2026-10-16T11:36:00",
+  "gemini_5h": 99.2,
+  "external_5h": 98.5
+ },
+ {
+  "timestamp": "2026-10-16T11:39:00",
+  "gemini_5h": 98.4,
+  "external_5h": 97.0
+ },
+ {
+  "timestamp": "2026-10-16T11:42:00",
+  "gemini_5h": 97.6,
+  "external_5h": 95.5
+ },
+ {
+  "timestamp": "2026-10-16T11:45:00",
+  "gemini_5h": 96.8,
+  "external_5h": 94.0
+ },
+ {
+  "timestamp": "2026-10-16T11:48:00",
+  "gemini_5h": 96.0,
+  "external_5h": 92.5
+ },
+ {
+  "timestamp": "2026-10-16T11:51:00",
+  "gemini_5h": 95.2,
+  "external_5h": 91.0
+ },
+ {
+  "timestamp": "2026-10-16T11:54:00",
+  "gemini_5h": 94.4,
+  "external_5h": 89.5
+ },
+ {
+  "timestamp": "2026-10-16T11:57:00",
+  "gemini_5h": 93.6,
+  "external_5h": 88.0
+ },
+ {
+  "timestamp": "2026-10-16T12:00:00",
+  "gemini_5h": 92.8,
+  "external_5h": 86.5
+ },
+ {
+  "timestamp": "2026-10-16T12:03:00",
+  "gemini_5h": 92.0,
+  "external_5h": 85.0
+ },
+ {
+  "timestamp": "2026-10-16T12:06:00",
+  "gemini_5h": 91.2,
+  "external_5h": 83.5
+ },
+ {
+  "timestamp": "2026-10-16T12:09:00",
+  "gemini_5h": 90.4,
+  "external_5h": 82.0
+ },
+ {
+  "timestamp": "2026-10-16T12:12:00",
+  "gemini_5h": 89.6,
+  "external_5h": 80.5
+ },
+ {
+  "timestamp": "2026-10-16T12:15:00",
+  "gemini_5h": 88.8,
+  "external_5h": 79.0
+ },
+ {
+  "timestamp": "2026-10-16T12:18:00",
+  "gemini_5h": 88.0,
+  "external_5h": 77.5
+ },
+ {
+  "timestamp": "2026-10-16T12:21:00",
+  "gemini_5h": 87.2,
+  "external_5h": 76.0
+ },
+ {
+  "timestamp": "2026-10-16T12:24:00",
+  "gemini_5h": 86.4,
+  "external_5h": 74.5
+ },
+ {
+  "timestamp": "2026-10-16T12:27:00",
+  "gemini_5h": 85.6,
+  "external_5h": 73.0
+ },
+ {
+  "timestamp": "2026-10-16T12:30:00",
+  "gemini_5h": 84.8,
+  "external_5h": 71.5
+ },
+ {
+  "timestamp": "2026-10-16T12:33:00",
+  "gemini_5h": 84.0,
+  "external_5h": 58.0
+ },
+ {
+  "timestamp": "2026-10-16T12:36:00",
+  "gemini_5h": 83.2,
+  "external_5h": 56.5
+ },
+ {
+  "timestamp": "2026-10-16T12:39:00",
+  "gemini_5h": 82.4,
+  "external_5h": 55.0
+ },
+ {
+  "timestamp": "2026-10-16T12:42:00",
+  "gemini_5h": 81.6,
+  "external_5h": 53.5
+ },
+ {
+  "timestamp": "2026-10-16T12:45:00",
+  "gemini_5h": 80.8,
+  "external_5h": 52.0
+ },
+ {
+  "timestamp": "2026-10-16T12:48:00",
+  "gemini_5h": 80.0,
+  "external_5h": 50.5
+ },
+ {
+  "timestamp": "2026-10-16T12:51:00",
+  "gemini_5h": 79.2,
+  "external_5h": 49.0
+ },
+ {
+  "timestamp": "2026-10-16T12:54:00",
+  "gemini_5h": 78.4,
+  "external_5h": 47.5
+ },
+ {
+  "timestamp": "2026-10-16T12:57:00",
+  "gemini_5h": 77.6,
+  "external_5h": 46.0
+ },
+ {
+  "timestamp": "2026-10-16T13:00:00",
+  "gemini_5h": 76.8,
+  "external_5h": 44.5
+ }
+]
