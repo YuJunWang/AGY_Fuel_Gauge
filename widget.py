@@ -42,8 +42,8 @@ import data_fetcher
 import history_logger
 import display_logic
 from display_logic import (MODES, PANEL_WIDTH, STATE_FILE, TOKENS_PER_BLOCK,
-                           anchored_x, bucket_drops, bucket_tokens,
-                           format_countdown, format_tokens, mode_width)
+                           anchored_x, bucket_drops, bucket_tokens, count_records,
+                           format_countdown, format_tokens, mode_width, rate_color)
 
 TRANSPARENT_COLOR = "#000001"
 BG_COLOR       = "#000000" # Pure Black
@@ -170,7 +170,7 @@ class _FuelGaugeBase(tk.Canvas):
     def set_value(self, pct, reset, now_utc):
         if pct is None:
             self._has_value = False
-            self._title_color = self.theme["safe"]
+            self._title_color = TEXT_MUTED  # no value: grey title, e.g. the "--" model bar
             self.itemconfig(self.title_text, fill=self._title_color)
             self._clear("--%", format_countdown(None, reset, now_utc))
             return
@@ -312,6 +312,11 @@ class HorizontalFuelGauge(_FuelGaugeBase):
         self.coords(self.time_text, self.width / 2, 9)
         super().set_value(pct, reset, now_utc)
 
+    def _clear(self, pct_text, time_text, color=TEXT_FG):
+        # Undo set_login's shift (e.g. login -> offline); set_login re-shifts after this.
+        self.coords(self.time_text, self.width / 2, 9)
+        super()._clear(pct_text, time_text, color)
+
     def set_login(self):
         super().set_login()
         # "LOGIN" is wider than a percentage: centre "/login" in the gap left of it.
@@ -325,7 +330,7 @@ class VerticalHistoryChart(tk.Canvas):
     """Two-sided burn chart. Values arrive pre-bucketed, in blocks (row 0 = newest)."""
 
     def __init__(self, parent, width, height, left_colors, right_colors, left_text_color, right_text_color,
-                 left_hover, right_hover, left_rate, right_rate, **kwargs):
+                 left_hover, right_hover, left_rate, right_rate, left_alert=True, right_alert=True, **kwargs):
         super().__init__(parent, width=width, height=height, bg="#000000", highlightthickness=0, **kwargs)
         self.width = width
         self.height = height
@@ -336,6 +341,7 @@ class VerticalHistoryChart(tk.Canvas):
         self.right_text_color = right_text_color
         self.left_hover, self.right_hover = left_hover, right_hover
         self.left_rate, self.right_rate = left_rate, right_rate
+        self.left_alert, self.right_alert = left_alert, right_alert
         self._init_gradients(left_colors, right_colors)
 
         self.bind("<Motion>", self.on_mouse_move)
@@ -483,8 +489,8 @@ class VerticalHistoryChart(tk.Canvas):
 
         left_hourly = sum(left) / 5.0
         right_hourly = sum(right) / 5.0
-        left_color = "#EF4444" if left_hourly > 20 else self.left_text_color
-        right_color = "#EF4444" if right_hourly > 20 else self.right_text_color
+        left_color = rate_color(left_hourly, self.left_text_color, self.left_alert)
+        right_color = rate_color(right_hourly, self.right_text_color, self.right_alert)
 
         # Floating Burn Rates (Reading top-to-bottom)
         self.create_text(8, self.height / 2, text=self.left_rate(left_hourly), fill=left_color, font=(DIGITAL_FONT, 8, "bold"), angle=270, anchor="center")
@@ -688,7 +694,7 @@ class AgyPanel(tk.Frame):
             self.view_5h_frame.pack(fill=tk.X)
 
     def render_chart(self, history, now):
-        if not history or len(history) < 2:
+        if count_records(history or [], ("gemini_5h", "external_5h")) < 2:
             self.chart.render(None, None)  # "Waiting..."
             return
         self.chart.render(bucket_drops(history, "gemini_5h", now, 100, 300.0),
@@ -741,14 +747,15 @@ class ClaudePanel(tk.Frame):
             left_hover=lambda v: f"{v:.1f}%",
             right_hover=lambda v: f"{v * TOKENS_PER_BLOCK / 1000:.0f}k",
             left_rate=lambda x: f"{round(x, 1)} %/h",
-            right_rate=lambda x: f"{x * TOKENS_PER_BLOCK / 1000:.0f} k/h")
+            right_rate=lambda x: f"{x * TOKENS_PER_BLOCK / 1000:.0f} k/h",
+            right_alert=False)  # token rate is throughput, not a quota: never red
         self.chart.pack(fill=tk.BOTH, expand=True)
 
         self.gauges = {"cl_5h": self.gauge_5h, "cl_wk": self.gauge_wk, "cl_model": self.model_gauge}
         self._model_label = "--"
 
     def render_chart(self, history, events, now):
-        has_5h = sum(1 for r in history if "claude_5h" in r) >= 2
+        has_5h = count_records(history, ("claude_5h",)) >= 2
         left = bucket_drops(history, "claude_5h", now, 100, 300.0) if has_5h else None
         right = bucket_tokens(events, now, 100, 300.0, TOKENS_PER_BLOCK)
         self.chart.render(left, right)
@@ -870,6 +877,7 @@ class UsageWidget:
         self.setup_tray()
         
         self.is_fetching = False
+        self._fetch_lock = threading.Lock()
         self.update_thread = threading.Thread(target=self.auto_update_loop, daemon=True)
         self.update_thread.start()
         
@@ -1013,11 +1021,18 @@ class UsageWidget:
         sys.exit(0)
         
     def trigger_refresh(self):
-        if not self.is_fetching:
+        # Atomic check-and-set: the tray, the button and auto_update_loop may race here.
+        if not self._fetch_lock.acquire(blocking=False):
+            return
+        self.is_fetching = True
+        try:
             threading.Thread(target=self.fetch_and_update, daemon=True).start()
+        except Exception:
+            self.is_fetching = False
+            self._fetch_lock.release()
+            raise
             
     def fetch_and_update(self):
-        self.is_fetching = True
         self.root.after(0, lambda: self.refresh_btn.config(fg=COLOR_GEM_SAFE))
         try:
             data = data_fetcher.fetch_all()
@@ -1026,6 +1041,7 @@ class UsageWidget:
             print(f"[AGY Fuel Gauge] Fetch failed: {e}")
         finally:
             self.is_fetching = False
+            self._fetch_lock.release()
             self.root.after(0, lambda: self.refresh_btn.config(fg=TEXT_MUTED))
             
     def update_ui_with_data(self, data):

@@ -77,6 +77,20 @@ def format_tokens(n):
     return f"{n} tok"
 
 
+RATE_ALERT_COLOR = "#EF4444"
+RATE_ALERT_THRESHOLD = 20  # blocks per hour
+
+
+def rate_color(hourly, normal, alert=True):
+    """Burn-rate text colour: red above the threshold, unless the side opts out of alerts."""
+    return RATE_ALERT_COLOR if alert and hourly > RATE_ALERT_THRESHOLD else normal
+
+
+def count_records(history, keys):
+    """Number of history records carrying at least one of `keys`."""
+    return sum(1 for r in history if any(k in r for k in keys))
+
+
 def bucket_drops(history, key, now, num_rows, total_minutes):
     """Per-row drop of `key` (row 0 = newest); resets never yield negatives."""
     parsed = []
