@@ -18,7 +18,7 @@
 | 架構 | 方案 1：拆出 `providers/agy.py`、`providers/claude.py`，widget 以 `ProviderPanel` 組裝 |
 
 ### 成功標準（全部成立才算完成）
-1. **AGY 畫面像素不變**：以固定假資料在重構前 commit（`4fbc37c`）與重構後各截圖一次，AGY 模式的主體區域（x = 24–134，不含刻意改版的左側分頁標籤）像素差異為 0。
+1. **AGY 畫面像素不變**：以固定假資料在重構前 commit（`4fbc37c`）與重構後各截圖一次，AGY 模式的主體區域（x = 24–134，不含刻意改版的左側分頁標籤）像素差異為 0。（2026-11-04 合併上游 `e1191a4` DPI 縮放後，基準改為 `e1191a4`，並在模擬 150% 縮放下同樣比對，主體區域為 x ≥ S(24)。）
 2. **單元測試全數通過**（第 7 節列出的每一項）。
 3. **實機對照**：使用者以 Claude Code CLI 登入後，widget 顯示的 5H / WK 剩餘 % 與 claude.ai「設定 → 用量」頁一致（剩餘 % = 100 − 頁面顯示的已用 %，允許 ±1% 的更新時差）。
 4. 未登入、AGY 未啟動、網路中斷三種情境下，widget 不崩潰，且另一來源照常更新。
@@ -121,7 +121,7 @@ tests/                 unittest 單元測試與 fixture
 - 可解析 `YYYY-MM-DDTHH:MM:SSZ`、帶小數秒、帶 `+00:00` 等時區偏移的 ISO 8601
 - 未來 → `Xd Xh` 或 `Xh Xm`；已過 → `Reset...`；無法解析 → `--`
 
-### 4.3 ProviderPanel（110 × 598 的一欄）
+### 4.3 ProviderPanel（110 × 598 的一欄，96 DPI 基準；實際尺寸乘上 `S()` DPI 縮放）
 由上而下：
 
 | 區塊 | AGY 欄（現狀不變） | Claude 欄 |
@@ -152,7 +152,7 @@ tests/                 unittest 單元測試與 fixture
 - **ModeTab**：左側 24 × 140 分頁標籤切為三段，由上而下 `AGY` / `CLD` / `BOTH`，直書。選中段亮色（AGY `#22C55E`、CLD `#D97757`、BOTH `#F8FAFC`），未選中為 `TEXT_MUTED`。分段間保留可拖曳移動視窗的區域。
 - **系統匣選單**：新增三個單選項目，與 ModeTab 同步。
 - **持久化**：模式寫入 `widget_state.json`（`{"mode": "agy" | "claude" | "both"}`），啟動時讀取；檔案不存在或損毀時預設 `agy`。
-- **視窗寬度**：單一模式 134px（24 標籤 + 110），BOTH 模式 244px（24 + 110 + 110），高度 598 不變。
+- **視窗寬度**：單一模式 134px（24 標籤 + 110），BOTH 模式 244px（24 + 110 + 110），高度 598 不變。以上為 96 DPI 數值；實際為 `S(24) + n × S(110)`，高度 `S(273) + 圖表高`（上游 `e1191a4` 的 DPI 縮放）。
 - **外框**：`build_window_region(width)` 依寬度重算 `SetWindowRgn` 的 L 型區域（含既有的 top patch 與 inner patch）。
 - **錨點**：切換時固定視窗右邊緣，寬度變化往左延伸。
 - **標題列**：BOTH 模式下共用一條橫跨兩欄的標題列；更新時間在左，↻ ✕ 在右。
@@ -195,7 +195,7 @@ tests/                 unittest 單元測試與 fixture
 | 某一 provider 拋例外時 `fetch_all()` 仍回傳另一方的 `ok` 快照 | 單一來源故障拖垮整個 widget |
 
 ### 像素比對（成功標準 1）
-`scratch/` 下的腳本以固定假資料啟動 widget 的 AGY 模式，以 `PIL.ImageGrab` 擷取視窗，分別在 `4fbc37c` 與新版執行，比對主體區域（x = 24–134）差異像素數必須為 0。腳本屬一次性驗證工具，不進版控。
+`scratch/` 下的腳本以固定假資料啟動 widget 的 AGY 模式，以 `PIL.ImageGrab` 擷取視窗，分別在 `4fbc37c` 與新版執行，比對主體區域（x = 24–134）差異像素數必須為 0。腳本屬一次性驗證工具，不進版控。合併 `e1191a4` 後，基準圖改由 `e1191a4` 產生，並以環境變數 `PIXEL_DPI_SCALE=1.5` 模擬 150% 縮放再比對一次。
 
 確保兩版輸出可重現的作法（舊版程式碼不修改，全靠腳本從外部注入）：
 - monkeypatch `widget.datetime` 與 `history_logger` 的時間為固定值，`get_history` 回傳固定紀錄。
