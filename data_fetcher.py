@@ -1,7 +1,6 @@
 """
 data_fetcher.py — AGY Fuel Gauge
-Legacy adapter: quota fetching now lives in providers/agy.py.
-Kept (temporarily) so widget.py keeps receiving the old dict format.
+Dispatcher: runs every provider in parallel and logs one merged history record.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -32,43 +31,3 @@ def fetch_all():
     out["last_updated"] = datetime.now().strftime("%H:%M:%S")
     return out
 
-
-def fetch_usage_data():
-    snap = agy.parse_quota(agy.fetcher.get_quota())
-
-    result = {
-        "gemini": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": ""},
-        "external": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": ""},
-        "argon": {"5hr_percent": 0, "weekly_percent": 0, "reset_time_5h": "", "reset_time_weekly": "", "available": False},
-        "last_updated": datetime.now().strftime("%H:%M:%S"),
-    }
-
-    if snap["status"] != "ok":
-        return result
-
-    legacy_keys = {
-        "gem_5h": ("gemini", "5hr_percent", "reset_time_5h", "5hr_used"),
-        "ext_5h": ("external", "5hr_percent", "reset_time_5h", "5hr_used"),
-        "gem_wk": ("gemini", "weekly_percent", "reset_time_weekly", "weekly_used"),
-        "ext_wk": ("external", "weekly_percent", "reset_time_weekly", "weekly_used"),
-        "arg_wk": ("argon", "weekly_percent", "reset_time_weekly", "weekly_used"),
-    }
-    argon_available = snap["extra"]["argon_available"]
-    result["argon"]["available"] = argon_available
-    for bar_id, (grp, pk, rk, uk) in legacy_keys.items():
-        if grp == "argon" and not argon_available:
-            continue
-        bar = snap["bars"][bar_id]
-        result[grp][pk] = bar["pct"]
-        result[grp][rk] = bar["reset"]
-        result[grp][uk] = round(100 - bar["pct"], 1)
-
-    fields = {
-        "gemini_5h": result["gemini"].get("5hr_percent", 100),
-        "external_5h": result["external"].get("5hr_percent", 100),
-    }
-    if result["argon"].get("available"):
-        fields["argon_wk"] = result["argon"].get("weekly_percent")
-    history_logger.log_usage(**fields)
-
-    return result

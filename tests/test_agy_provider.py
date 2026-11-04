@@ -1,9 +1,7 @@
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-import data_fetcher
 from providers.agy import parse_quota
 
 FIX = Path(__file__).parent / "fixtures"
@@ -43,14 +41,6 @@ class TestAgyParse(unittest.TestCase):
         s = parse_quota(None)
         self.assertEqual(s["status"], "offline")
         self.assertEqual(s["history"], {})
-
-    def test_legacy_adapter_unchanged(self):
-        # 防 Task 7 之前 widget 讀到的資料格式被改變
-        with patch("providers.agy.fetcher.get_quota", return_value=self.data), \
-             patch("history_logger.log_usage"):
-            out = data_fetcher.fetch_usage_data()
-        out.pop("last_updated")
-        self.assertEqual(out, self.legacy)
 
 
 if __name__ == "__main__":
