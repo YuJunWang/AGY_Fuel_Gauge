@@ -7,7 +7,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-TOKENS_PER_BLOCK = 20000  # calibrated in Task 9
+TOKENS_PER_BLOCK: int = 20000  # calibrated in Task 9: P99/10 ~ 21k of 3-min buckets
 
 MODES = ("agy", "claude", "both")
 STATE_FILE = Path(__file__).with_name("widget_state.json")
