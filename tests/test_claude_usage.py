@@ -16,6 +16,17 @@ from providers.claude import (claude_dir, fetch_usage, parse_usage,
                               read_access_token)
 
 
+def setUpModule():
+    # 測試絕不寫進專案根目錄的真實診斷 log
+    global _log_patch
+    _log_patch = patch.object(claude, "REFRESH_LOG", Path(tempfile.mkdtemp()) / "refresh.log")
+    _log_patch.start()
+
+
+def tearDownModule():
+    _log_patch.stop()
+
+
 def bucket(u, r="2026-11-04T15:00:00.123456+00:00"):
     return {"utilization": u, "resets_at": r}
 
@@ -282,6 +293,74 @@ class TestRefreshViaCli(unittest.TestCase):
              patch("subprocess.run",
                    side_effect=claude.subprocess.TimeoutExpired("claude", 20)):
             self.assertFalse(claude.refresh_via_cli(5000.0))
+
+
+class TestRefreshDiagnosticLog(unittest.TestCase):
+    """widget 由 sidecar 以 pythonw 啟動，print 全部丟失；換新失敗只能靠這份 log 查原因。"""
+
+    def setUp(self):
+        claude._last_cli_refresh = None
+        self.addCleanup(setattr, claude, "_last_cli_refresh", None)
+        self.log = Path(tempfile.mkdtemp()) / "refresh.log"
+        p = patch.object(claude, "REFRESH_LOG", self.log)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _text(self):
+        return self.log.read_text(encoding="utf-8")
+
+    def test_logs_exit_code_and_stderr_without_secrets(self):
+        # 要看得到 CLI 為何失敗，但 log 不能洩漏 token 或帳號資料
+        secret = "sk-ant-ort01-" + "A" * 40
+        done = claude.subprocess.CompletedProcess(
+            ["claude"], 1, stdout=b'{"email": "me@example.com"}',
+            stderr=f"refresh failed {secret}".encode())
+        with patch.object(claude, "_find_cli", return_value="C:/x/claude.exe"), \
+             patch("subprocess.run", return_value=done):
+            claude.refresh_via_cli(1000.0)
+        text = self._text()
+        self.assertIn("exit=1", text)
+        self.assertIn("refresh failed", text)
+        self.assertIn("C:/x/claude.exe", text)
+        self.assertNotIn(secret, text)
+        self.assertNotIn("me@example.com", text)
+
+    def test_logs_missing_cli_and_timeout(self):
+        # 找不到 CLI 與逾時是兩種不同的修法，log 要分得出來
+        with patch.object(claude, "_find_cli", return_value=None):
+            claude.refresh_via_cli(1000.0)
+        claude._last_cli_refresh = None
+        with patch.object(claude, "_find_cli", return_value="claude"), \
+             patch("subprocess.run",
+                   side_effect=claude.subprocess.TimeoutExpired("claude", 20)):
+            claude.refresh_via_cli(5000.0)
+        text = self._text()
+        self.assertIn("not found", text)
+        self.assertIn("TimeoutExpired", text)
+
+    def test_cli_refresh_logs_whether_credentials_were_rewritten(self):
+        # CLI 回 exit 0 不代表有換新；要記下憑證檔到底有沒有被改寫
+        creds = Path(tempfile.mkdtemp()) / ".credentials.json"
+        creds.write_text("{}")
+        with patch.object(claude, "has_login", return_value=True), \
+             patch.object(claude, "refresh_via_cli", return_value=True):
+            claude._cli_refresh(creds)
+        self.assertIn("credentials rewritten=no", self._text())
+
+        def rewrite(_now):
+            os.utime(creds, (1, os.stat(creds).st_mtime + 10))
+            return True
+        with patch.object(claude, "has_login", return_value=True), \
+             patch.object(claude, "refresh_via_cli", side_effect=rewrite):
+            claude._cli_refresh(creds)
+        self.assertIn("credentials rewritten=yes", self._text())
+
+    def test_unwritable_log_never_breaks_refresh(self):
+        # log 寫不進去時，換新流程照常進行
+        with patch.object(claude, "REFRESH_LOG", Path(tempfile.mkdtemp()) / "no" / "dir" / "x.log"), \
+             patch.object(claude, "_find_cli", return_value="claude"), \
+             patch("subprocess.run"):
+            self.assertTrue(claude.refresh_via_cli(1000.0))
 
 
 class TestHasLogin(unittest.TestCase):

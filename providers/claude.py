@@ -5,6 +5,7 @@ Claude subscription usage via the OAuth usage endpoint (read-only; never writes 
 import http.client
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -19,6 +20,10 @@ TIMEOUT = 5
 CLI_TIMEOUT_S = 20
 CLI_REFRESH_COOLDOWN_S = 600
 _last_cli_refresh = None  # time.monotonic() of the last CLI refresh attempt
+# pythonw under the sidecar drops print(); renewal attempts are logged here instead.
+REFRESH_LOG = Path(__file__).resolve().parent.parent / "claude_refresh.log"
+REFRESH_LOG_MAX_BYTES = 100_000
+_SECRET_RE = re.compile(r"[A-Za-z0-9_\-.]{24,}")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -73,6 +78,17 @@ def _find_cli():
     return str(fallback) if fallback.exists() else None
 
 
+def _log_refresh(msg):
+    """Append one diagnostic line; never raises. Long token-like strings are redacted."""
+    line = f"{datetime.now().isoformat(timespec='seconds')} {_SECRET_RE.sub('<redacted>', msg)}\n"
+    try:
+        mode = "w" if REFRESH_LOG.exists() and REFRESH_LOG.stat().st_size > REFRESH_LOG_MAX_BYTES else "a"
+        with open(REFRESH_LOG, mode, encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
 def refresh_via_cli(now_s):
     """Ask Claude Code to renew its own token (it rewrites the credentials; we only re-read).
     Rate-limited so a CLI that cannot refresh is not launched every fetch."""
@@ -83,18 +99,39 @@ def refresh_via_cli(now_s):
     exe = _find_cli()
     if not exe:
         print("[claude] claude CLI not found; cannot renew login")
+        _log_refresh("claude CLI not found")
         return False
+    start = time.monotonic()
     try:
-        subprocess.run([exe, "auth", "status"], capture_output=True, timeout=CLI_TIMEOUT_S,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+        r = subprocess.run([exe, "auth", "status"], capture_output=True, timeout=CLI_TIMEOUT_S,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
     except (OSError, subprocess.SubprocessError) as e:
         print(f"[claude] claude CLI refresh failed: {type(e).__name__}")
+        _log_refresh(f"cli={exe} {type(e).__name__} {time.monotonic() - start:.1f}s")
         return False
+    # stdout carries account details (email, org), so only stderr is logged.
+    err = r.stderr if isinstance(r.stderr, bytes) else b""
+    err = err.decode("utf-8", errors="replace").strip().replace("\n", " | ")[:300]
+    _log_refresh(f"cli={exe} exit={r.returncode} {time.monotonic() - start:.1f}s stderr={err!r}")
     return True
 
 
+def _mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
 def _cli_refresh(creds_path):
-    return has_login(creds_path) and refresh_via_cli(time.monotonic())
+    if not has_login(creds_path):
+        return False
+    before = _mtime(creds_path)
+    ran = refresh_via_cli(time.monotonic())
+    if ran:
+        rewritten = "yes" if _mtime(creds_path) != before else "no"
+        _log_refresh(f"credentials rewritten={rewritten}")
+    return ran
 
 
 def _bar(label, bucket):
