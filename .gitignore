@@ -5,6 +5,8 @@ __pycache__/
 
 # Local user data (DO NOT COMMIT)
 usage_history.json
+widget_state.json
+claude_refresh.log
 .credentials_cache.json
 *.log
 

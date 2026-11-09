@@ -4,12 +4,16 @@ from datetime import datetime, timedelta
 
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "usage_history.json")
 
-def log_usage(gemini_5h_pct, external_5h_pct, argon_wk_pct=None):
+def log_usage(**fields):
     """
-    Appends the current usage to the history file.
+    Appends the given usage fields (e.g. gemini_5h=.., claude_5h=..) to the history file.
+    No fields -> nothing is written.
     Enforces a 2.5-minute cooldown to prevent manual refreshes from
     polluting the time-series data with spurious near-zero delta values.
     """
+    if not fields:
+        return
+
     history = _load_history()
     
     # Cooldown guard: skip if last entry was less than 2.5 minutes ago
@@ -22,14 +26,8 @@ def log_usage(gemini_5h_pct, external_5h_pct, argon_wk_pct=None):
             pass  # If timestamp is malformed, just proceed to log
     
     now = datetime.now().isoformat()
-    record = {
-        "timestamp": now,
-        "gemini_5h": gemini_5h_pct,
-        "external_5h": external_5h_pct
-    }
-    if argon_wk_pct is not None:
-        record["argon_wk"] = argon_wk_pct
-    
+    record = {"timestamp": now, **fields}
+
     history.append(record)
     
     # Prune history to keep only last 24 hours (approx 480 records at 3 min intervals)

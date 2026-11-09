@@ -1,0 +1,26 @@
+{
+  "gemini": {
+    "5hr_percent": 97.5,
+    "weekly_percent": 99.3,
+    "reset_time_5h": "2026-10-16T06:39:10Z",
+    "reset_time_weekly": "2026-10-23T01:39:10Z",
+    "weekly_used": 0.7,
+    "5hr_used": 2.5
+  },
+  "external": {
+    "5hr_percent": 100.0,
+    "weekly_percent": 44.4,
+    "reset_time_5h": "2026-10-16T07:05:49Z",
+    "reset_time_weekly": "2026-10-22T01:43:46Z",
+    "weekly_used": 55.6,
+    "5hr_used": 0.0
+  },
+  "argon": {
+    "5hr_percent": 0,
+    "weekly_percent": 81.3,
+    "reset_time_5h": "",
+    "reset_time_weekly": "2026-10-23T01:25:14Z",
+    "available": true,
+    "weekly_used": 18.7
+  }
+}
