@@ -3,14 +3,13 @@
 Most telemetry tools introduce unnecessary cognitive load with complex dashboards and extensive configuration files. AGY Fuel Gauge provides a minimalist alternative: a zero-config, frameless widget that monitors your remaining AI quotas without interrupting your workflow. Instead of requiring API credentials, it bypasses authentication by directly intercepting the gRPC-Web traffic from your local `language_server.exe` daemon. It runs silently in the background and requires zero manual setup.
 
 <p align="center">
-  <img src="./assets/widget_5h.png" alt="Vertical Fuel Gauge 5H View" height="400"/>
+  <img src="./assets/widget_agy.png" alt="AGY mode: Gemini and external-model quotas" height="400"/>
   &nbsp;&nbsp;
-  <img src="./assets/widget_wk.png" alt="Vertical Fuel Gauge Weekly View" height="400"/>
+  <img src="./assets/widget_cld.png" alt="CLD mode: Claude quota and token waveform" height="400"/>
   &nbsp;&nbsp;
-  <img src="./assets/widget_full.png" alt="Vertical Fuel Gauge Full State" height="400"/>
-  &nbsp;&nbsp;
-  <img src="./assets/widget_mixed.png" alt="Vertical Fuel Gauge Mixed State" height="400"/>
+  <img src="./assets/widget_both.png" alt="BOTH mode: AGY and Claude side by side" height="400"/>
 </p>
+<p align="center"><sub><code>AGY</code> · <code>CLD</code> · <code>BOTH</code> (demo data)</sub></p>
 
 ## Tech Specs
 1. **Zero Auth API Hook**: Extracts port and `x-codeium-csrf-token` from `language_server.exe` logs. Hooks internal gRPC-Web directly.
