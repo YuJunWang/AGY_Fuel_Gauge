@@ -19,6 +19,9 @@ BETA_HEADER = "oauth-2025-04-20"
 TIMEOUT = 5
 CLI_TIMEOUT_S = 20
 CLI_REFRESH_COOLDOWN_S = 600
+# Without an entrypoint (e.g. under the sidecar), `auth status` only reads the local
+# file and never renews an expired token; with this one it does (bisected 2026-11-06).
+CLI_ENTRYPOINT = "claude-desktop"
 _last_cli_refresh = None  # time.monotonic() of the last CLI refresh attempt
 # pythonw under the sidecar drops print(); renewal attempts are logged here instead.
 REFRESH_LOG = Path(__file__).resolve().parent.parent / "claude_refresh.log"
@@ -104,7 +107,8 @@ def refresh_via_cli(now_s):
     start = time.monotonic()
     try:
         r = subprocess.run([exe, "auth", "status"], capture_output=True, timeout=CLI_TIMEOUT_S,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+                           env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": CLI_ENTRYPOINT})
     except (OSError, subprocess.SubprocessError) as e:
         print(f"[claude] claude CLI refresh failed: {type(e).__name__}")
         _log_refresh(f"cli={exe} {type(e).__name__} {time.monotonic() - start:.1f}s")

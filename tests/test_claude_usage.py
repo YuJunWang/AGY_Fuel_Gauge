@@ -273,6 +273,17 @@ class TestRefreshViaCli(unittest.TestCase):
         self.assertEqual(kw["creationflags"], getattr(claude.subprocess, "CREATE_NO_WINDOW", 0))
         self.assertEqual(kw["timeout"], claude.CLI_TIMEOUT_S)
 
+    def test_cli_env_sets_entrypoint_and_keeps_inherited_env(self):
+        # 防 sidecar 環境下 auth status 只讀本機檔、不換新（2026-11-06 二分測試：
+        # 缺 CLAUDE_CODE_ENTRYPOINT 時 token 過期也不會被改寫）
+        with patch.object(claude, "_find_cli", return_value="claude"), \
+             patch.dict(os.environ, {"AGY_PROBE": "kept"}), \
+             patch("subprocess.run") as run:
+            claude.refresh_via_cli(1000.0)
+        env = run.call_args[1]["env"]
+        self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "claude-desktop")
+        self.assertEqual(env["AGY_PROBE"], "kept")
+
     def test_cooldown_limits_attempts(self):
         # 防 CLI 換不到 token 時每 3 分鐘都重跑一次 CLI
         with patch.object(claude, "_find_cli", return_value="claude"), \
