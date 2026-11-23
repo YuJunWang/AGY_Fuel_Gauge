@@ -78,15 +78,15 @@ class TestAgyTranscriptScanner(unittest.TestCase):
                 {"step_index": 1, "type": "PLANNER_RESPONSE",
                  "created_at": self._iso_utc(t_hyd_wk),
                  "model": "gemini-4-hydrogen-xhigh",
-                 "input_tokens": 2_000_000, "output_tokens": 1_080_000},
+                 "input_tokens": 20_000_000, "output_tokens": 5_000_000, "cache_read_tokens": 6_360_000},
                 {"step_index": 2, "type": "PLANNER_RESPONSE",
                  "created_at": self._iso_utc(t_hyd_5h),
                  "model": "gemini-4-hydrogen-high",
-                 "input_tokens": 1_000_000, "output_tokens": 710_000},
+                 "input_tokens": 2_000_000, "output_tokens": 400_000, "cache_read_tokens": 23_000_000},
                 {"step_index": 3, "type": "PLANNER_RESPONSE",
                  "created_at": self._iso_utc(t_arg_wk),
                  "model": "gemini-4-argon-medium",
-                 "input_tokens": 500_000, "output_tokens": 434_000},
+                 "input_tokens": 500_000, "output_tokens": 540_000, "cache_read_tokens": 9_000_000},
                 {"step_index": 4, "type": "USER_INPUT",
                  "created_at": self._iso_utc(NOW - timedelta(minutes=20)),
                  "input_tokens": 9_999_999},
@@ -99,21 +99,45 @@ class TestAgyTranscriptScanner(unittest.TestCase):
             self.assertEqual(snap["status"], "ok")
             bars = snap["bars"]
 
-            # HYD 5H: 1.71M / 8.55M used = 20% used -> 80.0% remaining, resets at t_hyd_5h + 5h
+            # HYD 5H: 25.4M / 127M used = 20% used -> 80.0% remaining, resets at t_hyd_5h + 5h
             self.assertEqual(bars["gem_5h"]["label"], "HYD")
             self.assertAlmostEqual(bars["gem_5h"]["pct"], 80.0)
             self.assertEqual(bars["gem_5h"]["reset"], self._iso_utc(t_hyd_5h + timedelta(hours=5)))
 
-            # HYD WK: (3.08M + 1.71M) = 4.79M / 30.8M used -> 84.4% remaining, resets at t_hyd_wk + 7d
+            # HYD WK: (31.36M + 25.4M) = 56.76M / 364M used = 15.6% used -> 84.4% remaining, resets at t_hyd_wk + 7d
             self.assertEqual(bars["gem_wk"]["label"], "HYD")
             self.assertAlmostEqual(bars["gem_wk"]["pct"], 84.4)
             self.assertEqual(bars["gem_wk"]["reset"], self._iso_utc(t_hyd_wk + timedelta(days=7)))
 
-            # ARG (5H & WK views show Argon weekly bucket): 0.934M / 4.67M = 20% used -> 80.0% remaining
+            # ARG (5H & WK views show Argon weekly bucket): 10.04M / 50.2M = 20% used -> 80.0% remaining
             for key in ("ext_5h", "ext_wk"):
                 self.assertEqual(bars[key]["label"], "ARG")
                 self.assertAlmostEqual(bars[key]["pct"], 80.0)
                 self.assertEqual(bars[key]["reset"], self._iso_utc(t_arg_wk + timedelta(days=7)))
+
+    def test_in_place_rewrite_picks_up_finalized_tokens(self):
+        """When Antigravity rewrites a streaming step (0 tokens -> finalized tokens), scanner must pick it up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t1 = NOW - timedelta(minutes=5)
+            _write_transcript(tmp, "conv-live", [
+                {"step_index": 10, "type": "PLANNER_RESPONSE",
+                 "created_at": self._iso_utc(t1),
+                 "model": "gemini-4-hydrogen-high",
+                 "status": "RUNNING"},
+            ], mtime=t1)
+            sc = agy.AgyTokenScanner(tmp)
+            self.assertEqual(len(sc.scan(NOW)), 0)
+
+            _write_transcript(tmp, "conv-live", [
+                {"step_index": 10, "type": "PLANNER_RESPONSE",
+                 "created_at": self._iso_utc(t1),
+                 "model": "gemini-4-hydrogen-high",
+                 "status": "DONE",
+                 "input_tokens": 3000, "output_tokens": 1000, "cache_read_tokens": 250_000},
+            ], mtime=NOW)
+            events = sc.scan(NOW)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0][2], 254_000)
 
 
 if __name__ == "__main__":

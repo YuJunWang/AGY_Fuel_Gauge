@@ -268,9 +268,9 @@ def parse_quota(data):
 
 
 # ── Local Transcript Scanner (Calibrated to Pro Quota & Reset Cycles) ─────
-HYD_5H_BUDGET = 8_550_000
-HYD_WK_BUDGET = 30_800_000
-ARG_WK_BUDGET = 4_670_000
+HYD_5H_BUDGET = 127_000_000
+HYD_WK_BUDGET = 364_000_000
+ARG_WK_BUDGET = 50_200_000
 ARG_5H_BUDGET = ARG_WK_BUDGET  # Argon only has a weekly quota bucket in Pro plans
 
 
@@ -279,7 +279,7 @@ def agy_brain_dir():
 
 
 def _parse_transcript_event(line, file_key):
-    """One transcript.jsonl line -> (dedup_key, local naive dt, family, active_tokens) or None."""
+    """One transcript.jsonl line -> (dedup_key, local naive dt, family, total_tokens) or None."""
     try:
         rec = json.loads(line)
         if rec.get("type") != "PLANNER_RESPONSE":
@@ -292,20 +292,24 @@ def _parse_transcript_event(line, file_key):
         family = "arg" if "argon" in model else "hyd"
         inp = int(rec.get("input_tokens") or 0)
         out = int(rec.get("output_tokens") or 0)
+        cache = int(rec.get("cache_read_tokens") or 0)
+        total = inp + out + cache
+        if total <= 0:
+            return None
         step_idx = rec.get("step_index")
         key = (file_key, step_idx, ts_str)
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
-    return key, ts, family, inp + out
+    return key, ts, family, total
 
 
 class AgyTokenScanner:
-    """Incrementally scans Antigravity conversation transcripts (transcript.jsonl) for model token usage."""
+    """Scans Antigravity conversation transcripts (transcript.jsonl) with per-file (mtime, size) caching.
+    Re-parses modified files from byte 0 because Antigravity rewrites transcript.jsonl in-place as steps finish."""
 
     def __init__(self, brain_dir):
         self.brain_dir = Path(brain_dir)
-        self.offsets = {}
-        self.seen_ids = set()
+        self._file_cache = {}  # path -> ((mtime_ns, size), [(ts, family, total_tokens), ...])
         self.events = []
 
     def scan(self, now):
@@ -314,34 +318,44 @@ class AgyTokenScanner:
             paths = list(self.brain_dir.glob("*/.system_generated/logs/transcript.jsonl"))
         except OSError:
             paths = []
+        all_events = []
+        active_paths = set()
         for path in paths:
             try:
                 st = path.stat()
                 if datetime.fromtimestamp(st.st_mtime) < start:
                     continue
-                offset = self.offsets.get(path, 0)
-                if st.st_size < offset:
-                    offset = 0
-                with open(path, "rb") as f:
-                    f.seek(offset)
-                    data = f.read()
+                active_paths.add(path)
+                sig = (getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)), st.st_size)
+                cached = self._file_cache.get(path)
+                if cached is not None and cached[0] == sig:
+                    file_events = cached[1]
+                else:
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    file_key = str(path)
+                    seen_in_file = set()
+                    file_events = []
+                    for raw in data.splitlines():
+                        ev = _parse_transcript_event(raw.decode("utf-8", errors="replace"), file_key)
+                        if ev is None:
+                            continue
+                        key, ts, family, total_tok = ev
+                        if key in seen_in_file:
+                            continue
+                        seen_in_file.add(key)
+                        file_events.append((ts, family, total_tok))
+                    self._file_cache[path] = (sig, file_events)
+                for e in file_events:
+                    if e[0] >= start:
+                        all_events.append(e)
             except OSError:
                 continue
-            end = data.rfind(b"\n")
-            if end < 0:
-                continue
-            self.offsets[path] = offset + end + 1
-            file_key = str(path)
-            for raw in data[:end].split(b"\n"):
-                ev = _parse_transcript_event(raw.decode("utf-8", errors="replace"), file_key)
-                if ev is None:
-                    continue
-                key, ts, family, active_tok = ev
-                if key in self.seen_ids:
-                    continue
-                self.seen_ids.add(key)
-                self.events.append((ts, family, active_tok))
-        self.events = [e for e in self.events if e[0] >= start]
+        for stale_p in list(self._file_cache.keys()):
+            if stale_p not in active_paths:
+                del self._file_cache[stale_p]
+        all_events.sort(key=lambda x: x[0])
+        self.events = all_events
         return list(self.events)
 
 
