@@ -13,6 +13,8 @@ import ssl
 import subprocess
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 try:
     import psutil
@@ -265,5 +267,205 @@ def parse_quota(data):
             "extra": {"argon_available": argon_available}}
 
 
+# ── Local Transcript Scanner (Calibrated to Pro Quota & Reset Cycles) ─────
+HYD_5H_BUDGET = 8_550_000
+HYD_WK_BUDGET = 30_800_000
+ARG_WK_BUDGET = 4_670_000
+ARG_5H_BUDGET = ARG_WK_BUDGET  # Argon only has a weekly quota bucket in Pro plans
+
+
+def agy_brain_dir():
+    return Path(os.environ.get("AGY_BRAIN_DIR") or (Path.home() / ".gemini" / "antigravity" / "brain"))
+
+
+def _parse_transcript_event(line, file_key):
+    """One transcript.jsonl line -> (dedup_key, local naive dt, family, active_tokens) or None."""
+    try:
+        rec = json.loads(line)
+        if rec.get("type") != "PLANNER_RESPONSE":
+            return None
+        ts_str = rec["created_at"]
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if ts.tzinfo is not None:
+            ts = ts.astimezone().replace(tzinfo=None)
+        model = (rec.get("model") or "").lower()
+        family = "arg" if "argon" in model else "hyd"
+        inp = int(rec.get("input_tokens") or 0)
+        out = int(rec.get("output_tokens") or 0)
+        step_idx = rec.get("step_index")
+        key = (file_key, step_idx, ts_str)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return key, ts, family, inp + out
+
+
+class AgyTokenScanner:
+    """Incrementally scans Antigravity conversation transcripts (transcript.jsonl) for model token usage."""
+
+    def __init__(self, brain_dir):
+        self.brain_dir = Path(brain_dir)
+        self.offsets = {}
+        self.seen_ids = set()
+        self.events = []
+
+    def scan(self, now):
+        start = now - timedelta(days=7)
+        try:
+            paths = list(self.brain_dir.glob("*/.system_generated/logs/transcript.jsonl"))
+        except OSError:
+            paths = []
+        for path in paths:
+            try:
+                st = path.stat()
+                if datetime.fromtimestamp(st.st_mtime) < start:
+                    continue
+                offset = self.offsets.get(path, 0)
+                if st.st_size < offset:
+                    offset = 0
+                with open(path, "rb") as f:
+                    f.seek(offset)
+                    data = f.read()
+            except OSError:
+                continue
+            end = data.rfind(b"\n")
+            if end < 0:
+                continue
+            self.offsets[path] = offset + end + 1
+            file_key = str(path)
+            for raw in data[:end].split(b"\n"):
+                ev = _parse_transcript_event(raw.decode("utf-8", errors="replace"), file_key)
+                if ev is None:
+                    continue
+                key, ts, family, active_tok = ev
+                if key in self.seen_ids:
+                    continue
+                self.seen_ids.add(key)
+                self.events.append((ts, family, active_tok))
+        self.events = [e for e in self.events if e[0] >= start]
+        return list(self.events)
+
+
+def _remaining_pct(used, budget):
+    return round(max(0.0, min(100.0, 100.0 - (used / budget) * 100.0)), 1)
+
+
+def _detect_wk_anchor_from_history(now):
+    """Detect the latest weekly cycle start from usage_history.json (100% -> <100% transition after idle)."""
+    try:
+        import history_logger
+        hist = history_logger._load_history()
+        cut = now - timedelta(days=7)
+        prev_full_ts = None
+        for r in hist:
+            g = r.get("gemini_5h")
+            if g is None:
+                continue
+            ts = datetime.fromisoformat(r["timestamp"])
+            if ts < cut:
+                continue
+            if g >= 99.9:
+                prev_full_ts = ts
+            elif prev_full_ts is not None:
+                return prev_full_ts
+    except Exception:
+        pass
+    return None
+
+
+def _hyd_cycles(events, now, wk_anchor=None):
+    """Compute (used_5h, reset_5h_iso, used_wk, reset_wk_iso) for Hydrogen/Gemini."""
+    hyd_ev = sorted((ts, tok) for ts, fam, tok in events if fam == "hyd" and tok > 0 and ts <= now)
+    if not hyd_ev:
+        return 0, "", 0, ""
+
+    # Weekly cycle start: use history anchor or latest >12h idle gap
+    wk_start = hyd_ev[0][0]
+    for i in range(1, len(hyd_ev)):
+        if (hyd_ev[i][0] - hyd_ev[i - 1][0]) > timedelta(hours=12):
+            wk_start = hyd_ev[i][0]
+
+    reset_wk_base = wk_anchor if (wk_anchor is not None and wk_anchor <= wk_start) else wk_start
+    while reset_wk_base + timedelta(days=7) <= now:
+        reset_wk_base += timedelta(days=7)
+    wk_end = reset_wk_base + timedelta(days=7)
+    used_wk = sum(tok for ts, tok in hyd_ev if ts >= reset_wk_base)
+    reset_wk_iso = wk_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 5H cycle: steps in 5-hour intervals from the active session's first turn (wk_start)
+    c5_start = wk_start
+    while c5_start + timedelta(hours=5) <= now:
+        c5_start += timedelta(hours=5)
+    c5_end = c5_start + timedelta(hours=5)
+    used_5h = sum(tok for ts, tok in hyd_ev if c5_start <= ts <= now)
+    reset_5h_iso = "" if used_5h == 0 else c5_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return used_5h, reset_5h_iso, used_wk, reset_wk_iso
+
+
+def _arg_cycle(events, now):
+    """Compute (used_wk, reset_wk_iso) for Argon (weekly bucket in Pro plans)."""
+    arg_ev = sorted((ts, tok) for ts, fam, tok in events if fam == "arg" and tok > 0 and ts <= now)
+    if not arg_ev:
+        return 0, ""
+    cycle_start = arg_ev[0][0]
+    while cycle_start + timedelta(days=7) <= now:
+        cycle_start += timedelta(days=7)
+    cycle_end = cycle_start + timedelta(days=7)
+    used = sum(tok for ts, tok in arg_ev if cycle_start <= ts <= now)
+    reset_iso = "" if used == 0 else cycle_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return used, reset_iso
+
+
+def build_transcript_snapshot(events, now, wk_anchor=None):
+    """Build Dual-Engine snapshot (HYD vs ARG with calibrated percentages & countdowns)."""
+    cut_5h = now - timedelta(hours=5)
+
+    hyd_5h, hyd_5h_reset, hyd_wk, hyd_wk_reset = _hyd_cycles(events, now, wk_anchor=wk_anchor)
+    arg_wk, arg_wk_reset = _arg_cycle(events, now)
+
+    hyd_5h_pct = _remaining_pct(hyd_5h, HYD_5H_BUDGET)
+    hyd_wk_pct = _remaining_pct(hyd_wk, HYD_WK_BUDGET)
+    arg_wk_pct = _remaining_pct(arg_wk, ARG_WK_BUDGET)
+
+    # Argon only has a weekly quota bucket in Pro plans, so both 5H and WK views show its active quota & countdown
+    bars = {
+        "gem_5h": {"label": "HYD", "pct": hyd_5h_pct, "reset": hyd_5h_reset},
+        "ext_5h": {"label": "ARG", "pct": arg_wk_pct, "reset": arg_wk_reset},
+        "gem_wk": {"label": "HYD", "pct": hyd_wk_pct, "reset": hyd_wk_reset},
+        "ext_wk": {"label": "ARG", "pct": arg_wk_pct, "reset": arg_wk_reset},
+    }
+    history = {
+        "gemini_5h": hyd_5h_pct,
+        "external_5h": arg_wk_pct,
+    }
+    hyd_events = [(ts, tok) for ts, fam, tok in events if ts >= cut_5h and fam == "hyd"]
+    arg_events = [(ts, tok) for ts, fam, tok in events if ts >= cut_5h and fam == "arg"]
+
+    return {
+        "status": "ok",
+        "bars": bars,
+        "history": history,
+        "extra": {
+            "argon_available": True,
+            "hyd_events": hyd_events,
+            "arg_events": arg_events,
+        },
+    }
+
+
+scanner = AgyTokenScanner(agy_brain_dir())
+
+
 def fetch():
-    return parse_quota(fetcher.get_quota())
+    data = fetcher.get_quota()
+    if data and "response" in data:
+        return parse_quota(data)
+    now = datetime.now()
+    try:
+        if scanner.brain_dir.exists():
+            events = scanner.scan(now)
+            wk_anchor = _detect_wk_anchor_from_history(now)
+            return build_transcript_snapshot(events, now, wk_anchor=wk_anchor)
+    except Exception as e:
+        print(f"[agy] transcript scan failed: {type(e).__name__}: {e}")
+    return parse_quota(None)

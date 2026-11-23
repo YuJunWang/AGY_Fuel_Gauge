@@ -699,24 +699,17 @@ class AgyPanel(tk.Frame):
         self.view_5h_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=gauge_h)
         self.view_5h_frame.pack(fill=tk.X)
         self.view_5h_frame.pack_propagate(False)
-        self.gemini_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="GEM", theme_id="gem", text_side="left")
+        self.gemini_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="HYD", theme_id="gem", text_side="left")
         self.gemini_5h_gauge.place(x=S(9), y=0)
-        self.ext_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="EXT", theme_id="ext", text_side="right")
+        self.ext_5h_gauge = VerticalFuelGauge(self.view_5h_frame, width=gauge_w, height=gauge_h, title="ARG", theme_id="ext", text_side="right")
         self.ext_5h_gauge.place(x=S(57), y=0)
 
         self.view_wk_frame = tk.Frame(self.bars_frame, bg=BG_COLOR, height=gauge_h)
         self.view_wk_frame.pack_propagate(False)
-        self.gemini_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="GEM", theme_id="gem", text_side="left")
+        self.gemini_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="HYD", theme_id="gem", text_side="left")
         self.gemini_wk_gauge.place(x=S(9), y=0)
-        self.ext_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="EXT", theme_id="ext", text_side="right")
+        self.ext_wk_gauge = VerticalFuelGauge(self.view_wk_frame, width=gauge_w, height=gauge_h, title="ARG", theme_id="ext", text_side="right")
         self.ext_wk_gauge.place(x=S(57), y=0)
-
-        # Horizontal Argon Weekly Fuel Bar
-        self.argon_frame = tk.Frame(self, bg=BG_COLOR, height=S(36))
-        self.argon_frame.pack(fill=tk.X, pady=(0, S(2)), padx=S(7))
-        self.argon_frame.pack_propagate(False)
-        self.argon_gauge = HorizontalFuelGauge(self.argon_frame, width=S(96), height=S(36), title="ARG", theme_id="arg")
-        self.argon_gauge.pack(fill=tk.BOTH, expand=True)
 
         # Vertical History Chart
         self.chart_frame = tk.Frame(self, bg=SURFACE_COLOR, bd=0, highlightthickness=0)
@@ -732,8 +725,7 @@ class AgyPanel(tk.Frame):
         self.chart.pack(fill=tk.BOTH, expand=True)
 
         self.gauges = {"gem_5h": self.gemini_5h_gauge, "ext_5h": self.ext_5h_gauge,
-                       "gem_wk": self.gemini_wk_gauge, "ext_wk": self.ext_wk_gauge,
-                       "arg_wk": self.argon_gauge}
+                       "gem_wk": self.gemini_wk_gauge, "ext_wk": self.ext_wk_gauge}
 
     def set_view(self, show_weekly):
         if getattr(self, 'show_weekly', None) == show_weekly: return
@@ -751,7 +743,13 @@ class AgyPanel(tk.Frame):
             self.view_wk_frame.pack_forget()
             self.view_5h_frame.pack(fill=tk.X)
 
-    def render_chart(self, history, now):
+    def render_chart(self, history, now, extra=None):
+        if extra and ("hyd_events" in extra or "arg_events" in extra):
+            from providers.agy import ARG_5H_BUDGET, HYD_5H_BUDGET
+            left = bucket_tokens(extra.get("hyd_events", []), now, 100, 300.0, HYD_5H_BUDGET / 100.0)
+            right = bucket_tokens(extra.get("arg_events", []), now, 100, 300.0, ARG_5H_BUDGET / 100.0)
+            self.chart.render(left, right)
+            return
         if count_records(history or [], ("gemini_5h", "external_5h")) < 2:
             self.chart.render(None, None)  # "Waiting..."
             return
@@ -759,8 +757,14 @@ class AgyPanel(tk.Frame):
                           bucket_drops(history, "external_5h", now, 100, 300.0))
 
     def apply(self, snapshot, history, now):
+        if snapshot.get("status") == "ok":
+            bars = snapshot.get("bars", {})
+            for bar_id, gauge in self.gauges.items():
+                lbl = (bars.get(bar_id) or {}).get("label")
+                if lbl:
+                    gauge.set_title(lbl)
         _apply_bars(snapshot, self.gauges, datetime.now(timezone.utc))
-        self.render_chart(history, now)
+        self.render_chart(history, now, snapshot.get("extra"))
 
 
 class ClaudePanel(tk.Frame):
@@ -789,13 +793,6 @@ class ClaudePanel(tk.Frame):
         self.gauge_wk = VerticalFuelGauge(self.bars_frame, width=gauge_w, height=gauge_h, title="WK", theme_id="cl_wk", text_side="right")
         self.gauge_wk.place(x=S(57), y=0)
 
-        # Horizontal model bar (OPS / SON)
-        self.model_frame = tk.Frame(self, bg=BG_COLOR, height=S(36))
-        self.model_frame.pack(fill=tk.X, pady=(0, S(2)), padx=S(7))
-        self.model_frame.pack_propagate(False)
-        self.model_gauge = HorizontalFuelGauge(self.model_frame, width=S(96), height=S(36), title="--", theme_id="cl_model")
-        self.model_gauge.pack(fill=tk.BOTH, expand=True)
-
         # Vertical History Chart: left = 5H % drop, right = token blocks
         self.chart_frame = tk.Frame(self, bg=SURFACE_COLOR, bd=0, highlightthickness=0)
         self.chart_frame.pack(fill=tk.BOTH, expand=True, pady=(S(4), S(8)), padx=S(6))
@@ -810,8 +807,7 @@ class ClaudePanel(tk.Frame):
             right_alert=False)  # token rate is throughput, not a quota: never red
         self.chart.pack(fill=tk.BOTH, expand=True)
 
-        self.gauges = {"cl_5h": self.gauge_5h, "cl_wk": self.gauge_wk, "cl_model": self.model_gauge}
-        self._model_label = "--"
+        self.gauges = {"cl_5h": self.gauge_5h, "cl_wk": self.gauge_wk}
 
     def render_chart(self, history, events, now):
         has_5h = count_records(history, ("claude_5h",)) >= 2
@@ -821,10 +817,6 @@ class ClaudePanel(tk.Frame):
 
     def apply(self, snapshot, history, now):
         status = snapshot.get("status")
-        if status == "ok":  # stale states keep the last model label
-            self._model_label = (snapshot.get("bars", {}).get("cl_model") or {}).get("label", "--")
-        # Login state blanks the title so "/login" and "LOGIN" are not cramped.
-        self.model_gauge.set_title("" if status == "login_required" else self._model_label)
         if status == "login_required":
             for gauge in self.gauges.values():
                 gauge.set_login()
@@ -928,7 +920,7 @@ class UsageWidget:
         self.header_h = S(24)
         self.width = self.tab_w + self.panel_w
         self.chart_h = S(10) + (100 * chart_row_step()) + S(15)
-        self.base_height = S(273) + self.chart_h
+        self.base_height = S(235) + self.chart_h
         self.panel_h = self.base_height - self.header_h
         self.root.geometry(f"{self.width}x{self.base_height}")
         

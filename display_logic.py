@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TOKENS_PER_BLOCK: int = 20000  # calibrated in Task 9: P99/10 ~ 21k of 3-min buckets
+AGY_TOKENS_PER_BLOCK: int = 60000  # calibrated on local transcript.jsonl: P99/10 ~ 66.5k of 3-min buckets
 
 MODES = ("agy", "claude", "both")
 STATE_FILE = Path(__file__).with_name("widget_state.json")
