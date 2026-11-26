@@ -92,7 +92,7 @@ class GaugeTkTests(unittest.TestCase):
         g.set_login()
         self.assertNotEqual(g.coords(g.time_text)[0], g.width / 2)
         g.set_stale(True)
-        self.assertEqual(g.coords(g.time_text), [g.width / 2, 9.0])
+        self.assertEqual(g.coords(g.time_text), [g.width / 2, float(widget.S(9))])
 
 
 if __name__ == "__main__":
